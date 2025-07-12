@@ -4,8 +4,8 @@
  * Module dependencies.
  */
 
-// We require app here, but it's an async function that sets up the app instance
-// We need to wait for app.locals.db to be set before starting the server
+// We require app here. app.js will now export the Express app instance immediately,
+// and it will also expose an 'initialize' async function on the app object.
 var app = require('../app');
 var debug = require('debug')('backend:server');
 var http = require('http');
@@ -15,33 +15,44 @@ var http = require('http');
  */
 
 var port = normalizePort(process.env.PORT || '3000');
-app.set('port', port);
 
 /**
- * Create HTTP server.
+ * Initialize app (database connection, routes, etc.) and create HTTP server.
+ * This async function ensures the app is fully set up before the server starts listening.
  */
 
-var server = http.createServer(app);
+async function startServer() {
+  try {
+    // 1. Initialize the application.
+    // This calls the async 'initialize' function defined in app.js,
+    // which connects to the database and mounts all routes.
+    // We must await this to ensure the app is ready.
+    await app.initialize();
+    
+    // 2. Set the port on the *now fully initialized* Express app instance.
+    app.set('port', port);
 
-/**
- * Listen on provided port, on all network interfaces.
- */
+    // 3. Create the HTTP server using the fully configured app.
+    var server = http.createServer(app);
 
-// Function to start the server only after the app is fully initialized
-function startServerWhenReady() {
-  // Check if app.locals.db (our MySQL pool) has been set by app.js's initializeApp
-  if (app.locals.db) {
+    /**
+     * Listen on provided port, on all network interfaces.
+     */
+
     server.listen(port);
     server.on('error', onError);
     server.on('listening', onListening);
-  } else {
-    // If not ready, wait a short period and try again
-    setTimeout(startServerWhenReady, 100);
+
+  } catch (error) {
+    // If any part of the app initialization or server creation fails, log and exit.
+    console.error('CRITICAL ERROR: Failed to start server due to initialization failure:', error);
+    process.exit(1);
   }
 }
 
-// Initial call to start the server readiness check
-startServerWhenReady();
+// Call the async function to start the server.
+// This is the entry point for your Node.js application.
+startServer();
 
 
 /**
