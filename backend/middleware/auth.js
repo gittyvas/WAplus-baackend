@@ -1,116 +1,134 @@
-// google-oauth-app/google-oauth-app/backend/middleware/auth.js
+// backend/middleware/auth.js
 
 const jwt = require("jsonwebtoken");
 const { OAuth2Client } = require("google-auth-library");
-// const { getFirestore } = require("firebase-admin/firestore"); // Removed: Will use req.app.locals.db
+// Removed: No longer using Firebase Admin SDK
+// const { getFirestore } = require("firebase-admin/firestore");
 
-// Load environment variables
-require("dotenv").config();
-
-const JWT_SECRET = process.env.JWT_SECRET;
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-
-const client = new OAuth2Client(GOOGLE_CLIENT_ID);
+// No need for dotenv.config() here, it's handled in app.js
+// No need for local consts for env vars, access them via req object where passed
+// GOOGLE_CLIENT_ID is accessed directly via process.env where needed for OAuth2Client init
 
 /**
- * Middleware to verify JWT and attach user info to req.
- * Also retrieves and attaches Google access token from Firestore for API calls.
+ * Middleware to verify application JWT and manage Google OAuth tokens.
+ * Attaches user info (from app JWT) and Google access token (from DB, refreshed if needed) to req.user.
  */
-const verifyToken = async (req, res, next) => {
+const authenticateToken = async (req, res, next) => {
   console.log("\n--- Backend Auth Middleware Start ---");
   console.log("Request URL:", req.originalUrl);
 
-  const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1]; // Bearer TOKEN
+  // Get JWT from HTTP-only cookie
+  const appToken = req.cookies.app_jwt;
 
-  console.log("Received Authorization Header:", authHeader ? "Exists" : "Missing");
-  console.log("Extracted JWT Token:", token ? "Exists" : "Missing");
+  console.log("Extracted app_jwt from cookie:", appToken ? "Exists" : "Missing");
 
+  if (!appToken) {
+    console.log("Auth Middleware: No application JWT provided. Sending 401.");
+    return res.status(401).json({ message: "Authentication required: No application token provided." });
+  }
 
-  if (!token) {
-    console.log("Auth Middleware: No token provided. Sending 401.");
-    return res.status(401).json({ message: "Access Denied: No token provided." });
+  const jwtSecret = req.jwtSecret; // Access JWT secret from req (set in app.js middleware)
+  const db = req.app.locals.db; // Access the MySQL pool from app.locals
+
+  if (!jwtSecret) {
+    console.error('CRITICAL ERROR: JWT_SECRET not available in authentication middleware.');
+    return res.status(500).json({ message: 'Server configuration error (JWT_SECRET missing).' });
+  }
+  if (!db) {
+    console.error("CRITICAL ERROR: MySQL DB instance not found in app.locals.");
+    return res.status(500).json({ message: "Server configuration error (Database not initialized)." });
   }
 
   try {
-    // 1. Verify the application JWT
+    // 1. Verify the application's JWT
     console.log("Auth Middleware: Verifying application JWT...");
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded; // Attach decoded JWT payload (userId, email, name)
-    console.log("Auth Middleware: JWT Decoded successfully. User ID:", decoded.userId, "Email:", decoded.email);
+    const decodedAppJwt = jwt.verify(appToken, jwtSecret);
+    req.user = decodedAppJwt; // Attach decoded JWT payload (e.g., userId)
+    console.log("Auth Middleware: Application JWT Decoded successfully. User ID:", decodedAppJwt.userId);
 
-    // 2. Retrieve Google access token from Firestore
-    // Access Firestore instance from app.locals
-    const db = req.app.locals.db;
-    if (!db) {
-      console.error("Auth Middleware: Firestore DB instance not found in app.locals.");
-      return res.status(500).json({ message: "Firebase DB not initialized in backend." });
+    // 2. Retrieve Google OAuth tokens from MySQL
+    console.log("Auth Middleware: Fetching Google tokens from MySQL for userId:", req.user.userId);
+    const [userRows] = await db.execute(
+      'SELECT google_access_token, google_refresh_token, access_token_expires_at FROM users WHERE id = ?',
+      [req.user.userId]
+    );
+
+    if (userRows.length === 0) {
+      console.warn("Auth Middleware: User not found in MySQL for userId:", req.user.userId);
+      return res.status(401).json({ message: "Authentication failed: User data not found." });
     }
 
-    const appId = process.env.APP_ID || "default-app-id"; // Ensure APP_ID is consistent
-    console.log("Auth Middleware: Using APP_ID:", appId);
+    let { google_access_token, google_refresh_token, access_token_expires_at } = userRows[0];
 
-    const userDocRef = db.collection(`artifacts/${appId}/users`).doc(req.user.userId);
-    const userDoc = await userDocRef.get();
+    // Ensure access_token_expires_at is a Date object
+    const googleTokenExpiryDate = access_token_expires_at ? new Date(access_token_expires_at) : null;
 
-    if (!userDoc.exists) {
-      console.warn("Auth Middleware: User document not found in Firestore for userId:", req.user.userId);
-      return res.status(401).json({ message: "Access Denied: User data not found in Firestore." });
-    }
-
-    const userData = userDoc.data();
-    let googleAccessToken = userData.googleAccessToken;
-    let googleRefreshToken = userData.googleRefreshToken;
-    const googleTokenExpiryDate = userData.googleTokenExpiryDate ? new Date(userData.googleTokenExpiryDate) : null;
-
-    console.log("Auth Middleware: Google Access Token Expiry:", googleTokenExpiryDate ? googleTokenExpiryDate.toISOString() : "None");
+    console.log("Auth Middleware: Google Access Token Expiry (from DB):", googleTokenExpiryDate ? googleTokenExpiryDate.toISOString() : "None");
     console.log("Auth Middleware: Current Time:", new Date().toISOString());
 
-    // Check if Google access token is expired or about to expire (e.g., within 5 minutes)
-    if (!googleAccessToken || !googleTokenExpiryDate || googleTokenExpiryDate.getTime() < (Date.now() + 5 * 60 * 1000)) {
+    // 3. Check if Google access token is expired or about to expire (e.g., within 5 minutes grace period)
+    if (!google_access_token || !googleTokenExpiryDate || googleTokenExpiryDate.getTime() < (Date.now() + 5 * 60 * 1000)) {
       console.log("Auth Middleware: Google access token expired or near expiry. Attempting to refresh...");
-      if (!googleRefreshToken) {
+
+      if (!google_refresh_token) {
         console.error("Auth Middleware: No Google refresh token available for user:", req.user.userId);
-        return res.status(401).json({ message: "Access Denied: Google session expired, no refresh token." });
+        return res.status(401).json({ message: "Authentication failed: Google session expired, no refresh token." });
       }
 
       try {
-        // Use google-auth-library to refresh the token
-        client.setCredentials({ refresh_token: googleRefreshToken });
+        const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+        const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+        const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI; // Needed for OAuth2Client constructor
+
+        if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REDIRECT_URI) {
+          console.error('CRITICAL ERROR: Google OAuth config missing for token refresh.');
+          return res.status(500).json({ message: 'Server OAuth configuration error.' });
+        }
+
+        const client = new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
+        client.setCredentials({ refresh_token: google_refresh_token });
+
         const { credentials } = await client.refreshAccessToken();
 
-        googleAccessToken = credentials.access_token;
+        google_access_token = credentials.access_token;
         const newExpiryDate = new Date(Date.now() + (credentials.expires_in * 1000)); // expires_in is in seconds
 
-        // Update Firestore with new tokens and expiry
-        await userDocRef.update({
-          googleAccessToken: googleAccessToken,
-          googleTokenExpiryDate: newExpiryDate.toISOString(),
-          // googleRefreshToken: credentials.refresh_token || googleRefreshToken // Refresh token might not always be returned
-        });
-        console.log("Auth Middleware: Google access token refreshed and Firestore updated. New expiry:", newExpiryDate.toISOString());
+        // Update MySQL with new tokens and expiry
+        await db.execute(
+          `UPDATE users SET
+             google_access_token = ?,
+             access_token_expires_at = ?,
+             google_refresh_token = COALESCE(?, google_refresh_token), -- Google might not always return a new refresh token
+             updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [google_access_token, newExpiryDate, credentials.refresh_token, req.user.userId]
+        );
+        console.log("Auth Middleware: Google access token refreshed and MySQL updated. New expiry:", newExpiryDate.toISOString());
 
       } catch (refreshError) {
-        console.error("Auth Middleware: Error refreshing Google access token:", refreshError);
+        console.error("Auth Middleware: Error refreshing Google access token:", refreshError.message);
         // If refresh fails, the user needs to re-authenticate
-        return res.status(401).json({ message: "Access Denied: Could not refresh Google token. Please re-authenticate." });
+        return res.status(401).json({ message: "Authentication failed: Could not refresh Google token. Please re-authenticate." });
       }
     } else {
       console.log("Auth Middleware: Google access token is valid and not near expiry.");
     }
 
-    req.user.googleAccessToken = googleAccessToken; // Attach updated Google access token to req.user
+    // Attach the (potentially refreshed) Google Access Token to req.user for downstream use
+    req.user.googleAccessToken = google_access_token;
     console.log("Auth Middleware: Successfully attached Google Access Token to req.user. Proceeding.");
     next(); // Proceed to the next middleware/route handler
+
   } catch (error) {
-    console.error("Auth Middleware: JWT verification or token refresh failed:", error);
+    console.error("Auth Middleware: JWT verification or token refresh failed:", error.message);
     if (error.name === "TokenExpiredError") {
-      return res.status(401).json({ message: "Access Denied: Application token expired." });
+      return res.status(401).json({ message: "Authentication failed: Application token expired." });
     }
-    return res.status(403).json({ message: "Access Denied: Invalid token." });
+    // For any other JWT or unexpected error
+    return res.status(403).json({ message: "Authentication failed: Invalid token." });
   } finally {
     console.log("--- Backend Auth Middleware End ---\n");
   }
 };
 
-module.exports = verifyToken;
+module.exports = authenticateToken;

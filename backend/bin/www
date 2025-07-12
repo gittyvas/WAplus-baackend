@@ -4,7 +4,9 @@
  * Module dependencies.
  */
 
-var app = require('../app'); // Ensure this path is correct
+// We require app here, but it's an async function that sets up the app instance
+// We need to wait for app.locals.db to be set before starting the server
+var app = require('../app');
 var debug = require('debug')('backend:server');
 var http = require('http');
 
@@ -25,9 +27,22 @@ var server = http.createServer(app);
  * Listen on provided port, on all network interfaces.
  */
 
-server.listen(port);
-server.on('error', onError);
-server.on('listening', onListening);
+// Function to start the server only after the app is fully initialized
+function startServerWhenReady() {
+  // Check if app.locals.db (our MySQL pool) has been set by app.js's initializeApp
+  if (app.locals.db) {
+    server.listen(port);
+    server.on('error', onError);
+    server.on('listening', onListening);
+  } else {
+    // If not ready, wait a short period and try again
+    setTimeout(startServerWhenReady, 100);
+  }
+}
+
+// Initial call to start the server readiness check
+startServerWhenReady();
+
 
 /**
  * Normalize a port into a number, string, or false.
@@ -87,5 +102,6 @@ function onListening() {
     ? 'pipe ' + addr
     : 'port ' + addr.port;
   debug('Listening on ' + bind);
-  console.log(`Backend server on ${addr.port}`);
+  // Changed console.log to be more informative
+  console.log(`Backend server listening on ${bind}`);
 }

@@ -1,95 +1,92 @@
-    // google-oauth-app/google-oauth-app/backend/app.js
+// backend/app.js
 
-    var createError = require("http-errors");
-    var express = require("express");
-    var path = require("path");
-    var cookieParser = require("cookie-parser");
-    var logger = require("morgan");
-    var cors = require("cors");
-    var firebase = require("firebase-admin"); // Firebase Admin SDK
+var createError = require("http-errors");
+var express = require("express");
+var path = require("path");
+var cookieParser = require("cookie-parser");
+var logger = require("morgan");
+var cors = require("cors");
+const jwt = require('jsonwebtoken'); // For JWT operations
 
-    // Load environment variables. In production, these are typically set directly in the environment.
-    // For local development, ensure you have a .env file with these variables.
-    // require("dotenv").config(); // Uncomment this line if you are using a .env file for local development
+// NEW: Require the database connection module
+const createDbPool = require("./db");
 
-    var app = express();
+// Load environment variables for local development.
+// In production (like Render), these are set directly in the environment.
+require("dotenv").config(); // Keep this for local development
 
-    // --- Environment Variable Checks (CRITICAL for Production) ---
-    if (!process.env.FRONTEND_URL) {
-      console.error('CRITICAL ERROR: FRONTEND_URL environment variable is not set!');
-      process.exit(1);
-    }
-    if (!process.env.APP_ID) {
-      console.error('CRITICAL ERROR: APP_ID environment variable (Firebase Project ID) is not set!');
-      process.exit(1);
-    }
+var app = express();
 
-    // --- IMPORTANT: Expecting FIREBASE_CONFIG as a direct JSON string ---
-    const firebaseConfigString = process.env.FIREBASE_CONFIG;
-    if (!firebaseConfigString) {
-      console.error('CRITICAL ERROR: FIREBASE_CONFIG environment variable (stringified service account JSON) is not set!');
-      process.exit(1);
-    }
+// --- Environment Variable Checks (CRITICAL for Production) ---
+// These checks ensure that essential configuration is present at startup.
+if (!process.env.FRONTEND_URL) {
+  console.error('CRITICAL ERROR: FRONTEND_URL environment variable is not set!');
+  process.exit(1);
+}
+if (!process.env.APP_ID) {
+  console.error('CRITICAL ERROR: APP_ID environment variable (e.g., for logging/tracking) is not set!');
+  process.exit(1);
+}
+if (!process.env.JWT_SECRET) {
+  console.error('CRITICAL ERROR: JWT_SECRET environment variable is not set! This is crucial for token security.');
+  process.exit(1);
+}
+if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !process.env.GOOGLE_REDIRECT_URI) {
+  console.error('CRITICAL ERROR: Google OAuth environment variables (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI) are not fully set!');
+  process.exit(1);
+}
+// DB environment variables are checked within db.js
 
-    // --- Set up CORS ---
-    app.use(
-      cors({
-        origin: process.env.FRONTEND_URL,
-        credentials: true,
-      })
-    );
+// Set up CORS middleware
+app.use(
+  cors({
+    origin: process.env.FRONTEND_URL,
+    credentials: true, // Allow cookies to be sent
+  })
+);
 
-    // --- Initialize Firebase Admin SDK ---
-    let serviceAccount;
-    try {
-      // Directly parse the JSON string from the environment variable
-      serviceAccount = JSON.parse(firebaseConfigString);
-    } catch (error) {
-      console.error('CRITICAL ERROR: Failed to parse FIREBASE_CONFIG JSON:', error.message);
-      process.exit(1);
-    }
+// Middleware for logging HTTP requests
+app.use(logger("dev")); // 'dev' is good for development, consider 'combined' or 'tiny' for production
 
-    const appId = process.env.APP_ID;
-    console.log(`Backend: Initializing Firebase Admin SDK for APP_ID: ${appId}`);
+// Middleware to parse JSON request bodies
+app.use(express.json());
 
-    // --- DEBUG LOG ---
-    // This will print the private key *after* JSON.parse,
-    // allowing us to verify its format if there are still issues.
-    console.log('DEBUG: Private Key received by app (after parsing):', serviceAccount.private_key);
-    // --- END DEBUG LOG ---
+// Middleware to parse URL-encoded request bodies
+app.use(express.urlencoded({ extended: false }));
 
-    const firebaseAdminApp = firebase.initializeApp({
-      credential: firebase.credential.cert(serviceAccount),
-      databaseURL: `https://${serviceAccount.projectId}.firebaseio.com`,
-      storageBucket: `${serviceAccount.projectId}.appspot.com`,
-      projectId: serviceAccount.projectId
-    }, appId);
+// Middleware to parse cookies (essential for HTTP-only JWTs)
+app.use(cookieParser());
 
-    // Make Firestore instance available globally via app.locals
-    app.locals.db = firebase.firestore(firebaseAdminApp);
-    app.locals.authAdmin = firebase.auth(firebaseAdminApp);
+// Serve static files from the 'public' directory
+app.use(express.static(path.join(__dirname, "public")));
 
-    // Now require routes/controllers AFTER Firebase is initialized
-    var indexRouter = require("./routes/index");
-    var authRouter = require("./routes/auth");
-    var apiRouter = require("./routes/api");
+// --- Initialize Database Connection Pool and Application ---
+// This async function wraps the entire app setup to ensure DB is ready before routes are mounted
+async function initializeApp() {
+  try {
+    const dbPool = await createDbPool(); // Attempt to create the database pool
+    app.locals.db = dbPool; // Make the MySQL pool available globally via app.locals
 
-    app.use(logger("dev"));
-    app.use(express.json());
-    app.use(express.urlencoded({ extended: false }));
-    app.use(cookieParser());
-    app.use(express.static(path.join(__dirname, "public")));
+    console.log('Backend: MySQL database connection pool initialized and available.');
 
-    // --- Middleware to attach app_id to the request object ---
+    // --- Middleware to attach app_id and JWT_SECRET to the request object ---
+    // This ensures req.app_id and req.jwtSecret are available to all subsequent middleware and route handlers
     app.use((req, res, next) => {
       req.app_id = process.env.APP_ID;
+      req.jwtSecret = process.env.JWT_SECRET;
       next();
     });
 
+    // Now require routes/controllers AFTER database is initialized
+    // These routes will now use MySQL for data operations
+    var indexRouter = require("./routes/index");
+    var authRouter = require("./routes/auth"); // NEW/UPDATED: For Google OAuth and JWT
+    var apiRouter = require("./routes/api");   // UPDATED: For Notes/Reminders CRUD
+
     // --- Route Mounting ---
     app.use("/", indexRouter);
-    app.use("/", authRouter);
-    app.use("/api", apiRouter);
+    app.use("/", authRouter); // Mount authentication routes
+    app.use("/api", apiRouter); // Mount API routes
 
     // Catch 404 and forward to error handler
     app.use(function (req, res, next) {
@@ -98,15 +95,25 @@
 
     // Error handler (simplified for API-only backend)
     app.use(function (err, req, res, next) {
-      console.error("Backend Error Handler:", err.stack);
+      console.error("Backend Error Handler:", err.stack); // Log the full stack trace for debugging
 
       res.status(err.status || 500);
 
       res.json({
         message: err.message,
-        error: req.app.get("env") === "development" ? err : {},
+        // Only provide stacktrace in development environment for security
+        error: app.get("env") === "development" ? err : {},
       });
     });
 
+    // Export the app instance once it's fully initialized
     module.exports = app;
-    
+
+  } catch (error) {
+    console.error('CRITICAL ERROR: Failed to initialize application due to unrecoverable error:', error);
+    process.exit(1); // Exit process if app initialization fails
+  }
+}
+
+// Call the async initialization function
+initializeApp();

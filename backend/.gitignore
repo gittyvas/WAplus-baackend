@@ -38,3 +38,24 @@
       serviceAccountKey.json
       pulse-crm-60584-firebase-adminsdk-fbsvc-f3c8a6ba53.json
         
+    # Node.js dependencies
+    node_modules/
+
+    # Environment variables (sensitive)
+    .env
+
+    # Python script (temporary utility)
+     escape_json.py
+
+    # Logs
+    *.log
+     npm-debug.log*
+     yarn-debug.log*
+     yarn-error.log*
+
+    # OS generated files
+    .DS_Store
+    .idea/
+    .vscode/
+    *.swp
+    
