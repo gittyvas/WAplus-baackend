@@ -4,9 +4,7 @@
  * Module dependencies.
  */
 
-// We require app here. app.js will now export the Express app instance immediately,
-// and it will also expose an 'initialize' async function on the app object.
-var app = require('../app');
+var app = require('../app'); // Imports the Express app instance from app.js
 var debug = require('debug')('backend:server');
 var http = require('http');
 
@@ -16,6 +14,9 @@ var http = require('http');
 
 var port = normalizePort(process.env.PORT || '3000');
 
+// Declare 'server' in a higher scope so it's accessible to onListening and onError
+var server; 
+
 /**
  * Initialize app (database connection, routes, etc.) and create HTTP server.
  * This async function ensures the app is fully set up before the server starts listening.
@@ -24,16 +25,14 @@ var port = normalizePort(process.env.PORT || '3000');
 async function startServer() {
   try {
     // 1. Initialize the application.
-    // This calls the async 'initialize' function defined in app.js,
-    // which connects to the database and mounts all routes.
-    // We must await this to ensure the app is ready.
     await app.initialize();
     
     // 2. Set the port on the *now fully initialized* Express app instance.
     app.set('port', port);
 
     // 3. Create the HTTP server using the fully configured app.
-    var server = http.createServer(app);
+    // Assign to the 'server' variable declared in the higher scope.
+    server = http.createServer(app);
 
     /**
      * Listen on provided port, on all network interfaces.
@@ -51,7 +50,6 @@ async function startServer() {
 }
 
 // Call the async function to start the server.
-// This is the entry point for your Node.js application.
 startServer();
 
 
@@ -108,11 +106,10 @@ function onError(error) {
  */
 
 function onListening() {
-  var addr = server.address();
+  var addr = server.address(); // 'server' is now defined due to higher scope
   var bind = typeof addr === 'string'
     ? 'pipe ' + addr
     : 'port ' + addr.port;
   debug('Listening on ' + bind);
-  // Changed console.log to be more informative
   console.log(`Backend server listening on ${bind}`);
 }
