@@ -3,7 +3,6 @@
 var express = require("express");
 var router = express.Router();
 // Import your JWT authentication middleware.
-// Based on your `ls` output, your middleware file is named 'auth.js'
 const authenticateToken = require("../middleware/auth"); 
 
 // Middleware to log all API requests (optional, useful for debugging)
@@ -16,16 +15,13 @@ router.use((req, res, next) => {
 // This ensures only authenticated users can access these API endpoints.
 router.use(authenticateToken);
 
-// --- NEW: User Profile API ---
+// --- User Profile API ---
 // Protected route to fetch user profile
-// This is the route your frontend's AuthContext is trying to access.
 router.get('/user/profile', async (req, res) => {
     const db = req.app.locals.db;
-    // Access userId as req.user.userId, as set by your `auth.js` middleware
     const userId = req.user.userId; 
 
     if (!userId) {
-        // This case should ideally not be hit if authenticateToken works correctly
         console.warn('API Route /user/profile: No userId found on req.user after authentication.');
         return res.status(401).json({ message: 'Unauthorized: User ID not found in token.' });
     }
@@ -41,19 +37,22 @@ router.get('/user/profile', async (req, res) => {
 
         const userProfile = rows[0];
 
-        // You can also fetch dashboard summary data here if it's tied to the user profile
-        // This is where you'd aggregate data for the dashboard.
-        // Example: Fetching total contacts for the user
-        const [contactsSummary] = await db.execute('SELECT COUNT(*) as totalContacts FROM contacts WHERE user_id = ?', [userId]);
+        // --- IMPORTANT CHANGE HERE ---
+        // If you are NOT saving contacts in your MySQL database,
+        // then remove the query that tries to count them from the 'contacts' table.
+        // Provide a default value or calculate it differently if needed.
         const dashboardSummary = {
-            totalContacts: contactsSummary[0].totalContacts,
-            // Add other summary metrics here (e.g., total notes, total reminders)
+            totalContacts: 0, // Set to 0 or fetch from Google API if you want a real count here
+            // Add other summary metrics here (e.g., total notes, total reminders from your DB)
         };
 
+        // If you intend to fetch contacts from Google API via the backend,
+        // you would do that in a *separate* API endpoint (e.g., /api/google-contacts)
+        // and use req.user.googleAccessToken to make the call to Google.
 
         res.status(200).json({
             user: userProfile,
-            dashboardSummary: dashboardSummary // Include the dashboard summary data
+            dashboardSummary: dashboardSummary 
         });
 
     } catch (error) {
@@ -64,11 +63,10 @@ router.get('/user/profile', async (req, res) => {
 
 
 // --- Notes API ---
-
-// Get all notes for the authenticated user
+// (No changes needed here, as these interact with 'notes' table)
 router.get('/notes', async (req, res) => {
   const db = req.app.locals.db;
-  const userId = req.user.userId; // Get userId from the authenticated token
+  const userId = req.user.userId;
 
   try {
     const [rows] = await db.execute('SELECT id, user_id, content, created_at FROM notes WHERE user_id = ? ORDER BY created_at DESC', [userId]);
@@ -79,7 +77,6 @@ router.get('/notes', async (req, res) => {
   }
 });
 
-// Create a new note for the authenticated user
 router.post('/notes', async (req, res) => {
   const db = req.app.locals.db;
   const userId = req.user.userId;
@@ -101,7 +98,6 @@ router.post('/notes', async (req, res) => {
   }
 });
 
-// Update a note for the authenticated user
 router.put('/notes/:id', async (req, res) => {
   const db = req.app.locals.db;
   const userId = req.user.userId;
@@ -128,7 +124,6 @@ router.put('/notes/:id', async (req, res) => {
   }
 });
 
-// Delete a note for the authenticated user
 router.delete('/notes/:id', async (req, res) => {
   const db = req.app.locals.db;
   const userId = req.user.userId;
@@ -148,8 +143,7 @@ router.delete('/notes/:id', async (req, res) => {
 });
 
 // --- Reminders API ---
-
-// Get all reminders for the authenticated user
+// (No changes needed here, as these interact with 'reminders' table)
 router.get('/reminders', async (req, res) => {
   const db = req.app.locals.db;
   const userId = req.user.userId;
@@ -163,7 +157,6 @@ router.get('/reminders', async (req, res) => {
   }
 });
 
-// Create a new reminder for the authenticated user
 router.post('/reminders', async (req, res) => {
   const db = req.app.locals.db;
   const userId = req.user.userId;
@@ -185,7 +178,6 @@ router.post('/reminders', async (req, res) => {
   }
 });
 
-// Update a reminder for the authenticated user
 router.put('/reminders/:id', async (req, res) => {
   const db = req.app.locals.db;
   const userId = req.user.userId;
@@ -212,7 +204,6 @@ router.put('/reminders/:id', async (req, res) => {
   }
 });
 
-// Delete a reminder for the authenticated user
 router.delete('/reminders/:id', async (req, res) => {
   const db = req.app.locals.db;
   const userId = req.user.userId;
