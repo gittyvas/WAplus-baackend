@@ -71,11 +71,13 @@ app.initialize = async function() {
     var indexRouter = require("./routes/index");
     var authRouter = require("./routes/auth");
     var apiRouter = require("./routes/api");
+    var contactsRouter = require("./routes/contacts"); // <-- NEW: Import contacts.js
 
     // Route Mounting
     app.use("/", indexRouter);
     app.use("/", authRouter);
     app.use("/api", apiRouter);
+    app.use("/api/contacts", contactsRouter); // <-- NEW: Mount contactsRouter under /api/contacts
 
     // Catch 404 and forward to error handler
     app.use(function (req, res, next) {
