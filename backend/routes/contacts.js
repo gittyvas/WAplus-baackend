@@ -73,7 +73,6 @@ async function refreshGoogleAccessToken(db, userId, googleRefreshToken) {
         return newAccessToken;
     } catch (refreshError) {
         console.error("Contacts Route: Error refreshing Google access token for user:", userId, refreshError.message);
-        // Log the full error response from Google if available
         if (refreshError.response && refreshError.response.data) {
             console.error("Contacts Route: Google Refresh API Error Response Data:", refreshError.response.data);
         }
@@ -132,19 +131,22 @@ router.get("/", verifyAppJwt, async (req, res) => {
         }
 
         console.log("Contacts Route: Access Token Status: Valid and ready for API call.");
-        console.log("Contacts Route: Google People API URL:", "[https://people.googleapis.com/v1/people/me/connections](https://people.googleapis.com/v1/people/me/connections)");
+        // --- FIX: Ensure no API key is passed in params ---
+        const googlePeopleApiUrl = "[https://people.googleapis.com/v1/people/me/connections](https://people.googleapis.com/v1/people/me/connections)";
+        console.log("Contacts Route: Google People API URL:", googlePeopleApiUrl);
         console.log("Contacts Route: Access Token Length (for debug):", googleAccessToken ? googleAccessToken.length : 'null/undefined');
         console.log("Contacts Route: Access Token Starts With (for debug):", googleAccessToken ? googleAccessToken.substring(0, 10) : 'null/undefined');
 
 
         // Call Google People API
         const { data } = await axios.get(
-            "[https://people.googleapis.com/v1/people/me/connections](https://people.googleapis.com/v1/people/me/connections)",
+            googlePeopleApiUrl, // Use the clean URL
             {
                 headers: { Authorization: `Bearer ${googleAccessToken}` },
                 params: {
                     personFields: "names,emailAddresses,phoneNumbers,photos,metadata",
                     pageSize: 200,
+                    // Ensure no 'key' parameter is here or being implicitly added
                 },
             }
         );
@@ -184,13 +186,15 @@ router.get("/", verifyAppJwt, async (req, res) => {
 
     } catch (err) {
         console.error("Contacts Route: Error fetching Google contacts:", err.response?.data || err.message);
-        // Log the full error response from Google if available
         if (err.response && err.response.data) {
             console.error("Contacts Route: Google People API Error Response Data:", err.response.data);
         }
-        // If Google API returns 401/403, it means Google access token is expired/invalid
         if (err.response && (err.response.status === 401 || err.response.status === 403)) {
             return res.status(401).json({ error: "Google access token expired. Please re-authenticate via login." });
+        }
+        // Catch any other errors that might still be "Invalid URL" from axios itself
+        if (err.message && err.message.includes("Invalid URL")) {
+            console.error("Contacts Route: Axios reported Invalid URL. Check the base URL and parameters.");
         }
         return res.status(500).json({ error: "Failed to fetch contacts", details: err.message });
     }
