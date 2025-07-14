@@ -131,22 +131,21 @@ router.get("/", verifyAppJwt, async (req, res) => {
         }
 
         console.log("Contacts Route: Access Token Status: Valid and ready for API call.");
-        // --- FIX: Ensure no API key is passed in params ---
+        // --- FIX: Ensure the URL string is pure, no Markdown formatting ---
         const googlePeopleApiUrl = "[https://people.googleapis.com/v1/people/me/connections](https://people.googleapis.com/v1/people/me/connections)";
-        console.log("Contacts Route: Google People API URL:", googlePeopleApiUrl);
+        console.log("Contacts Route: Google People API URL (actual string):", googlePeopleApiUrl); // Log the actual string
         console.log("Contacts Route: Access Token Length (for debug):", googleAccessToken ? googleAccessToken.length : 'null/undefined');
         console.log("Contacts Route: Access Token Starts With (for debug):", googleAccessToken ? googleAccessToken.substring(0, 10) : 'null/undefined');
 
 
         // Call Google People API
         const { data } = await axios.get(
-            googlePeopleApiUrl, // Use the clean URL
+            googlePeopleApiUrl, // Use the clean URL here
             {
                 headers: { Authorization: `Bearer ${googleAccessToken}` },
                 params: {
                     personFields: "names,emailAddresses,phoneNumbers,photos,metadata",
                     pageSize: 200,
-                    // Ensure no 'key' parameter is here or being implicitly added
                 },
             }
         );
@@ -192,9 +191,9 @@ router.get("/", verifyAppJwt, async (req, res) => {
         if (err.response && (err.response.status === 401 || err.response.status === 403)) {
             return res.status(401).json({ error: "Google access token expired. Please re-authenticate via login." });
         }
-        // Catch any other errors that might still be "Invalid URL" from axios itself
         if (err.message && err.message.includes("Invalid URL")) {
-            console.error("Contacts Route: Axios reported Invalid URL. Check the base URL and parameters.");
+            console.error("Contacts Route: Axios reported Invalid URL. This is likely due to a malformed URL string being passed to axios.get.");
+            console.error("Contacts Route: The URL string being used was:", googlePeopleApiUrl); // Log the problematic URL
         }
         return res.status(500).json({ error: "Failed to fetch contacts", details: err.message });
     }
