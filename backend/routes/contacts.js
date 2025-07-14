@@ -1,8 +1,6 @@
-// google-oauth-app/backend/routes/contacts.js
+// backend/routes/contacts.js
 // -----------------------------------------------------------------------------
 // Contacts route – fetches Google contacts for the authenticated Pulse user.
-// Uses the app_jwt (from HTTP-only cookie) for authentication,
-// then looks up the stored Google *access* token in the database to call People API.
 // Includes logic to refresh Google access token if expired.
 // -----------------------------------------------------------------------------
 
@@ -10,24 +8,25 @@ const express = require("express");
 const router = express.Router();
 const axios = require("axios");
 const { OAuth2Client } = require("google-auth-library");
-const jwt = require("jsonwebtoken"); // Import jwt for verification
+const jwt = require("jsonwebtoken");
 
 // Your Google OAuth Client ID and Secret – set these in env
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
 
-const oauthClient = new OAuth2Client(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
+// Initialize OAuth2Client globally, but ensure env vars are present
+let oauthClient;
+if (CLIENT_ID && CLIENT_SECRET && REDIRECT_URI) {
+    oauthClient = new OAuth2Client(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
+} else {
+    console.error("CRITICAL: Google OAuth environment variables not fully set for contacts.js! OAuth2Client may not function correctly.");
+}
 
-/**
- * verifyAppJwt - Express middleware that checks the 'app_jwt' cookie.
- * If valid, it places the decoded userId on `req.userId` and calls `next()`.
- * If invalid/missing, it returns 401.
- * This middleware should be used for protected routes.
- */
+
 async function verifyAppJwt(req, res, next) {
-    const appJwt = req.cookies.app_jwt; // Get JWT from HTTP-only cookie
-    const jwtSecret = req.jwtSecret; // Access jwtSecret from req (set in app.js)
+    const appJwt = req.cookies.app_jwt;
+    const jwtSecret = req.jwtSecret;
 
     if (!appJwt) {
         console.warn("Contacts Route Auth: No app_jwt cookie found.");
@@ -40,7 +39,7 @@ async function verifyAppJwt(req, res, next) {
 
     try {
         const decoded = jwt.verify(appJwt, jwtSecret);
-        req.userId = decoded.userId; // Attach userId to the request
+        req.userId = decoded.userId;
         console.log("Contacts Route Auth: app_jwt verified. User ID:", req.userId);
         next();
     } catch (err) {
@@ -49,15 +48,12 @@ async function verifyAppJwt(req, res, next) {
     }
 }
 
-/**
- * refreshGoogleAccessToken - Function to refresh Google access token using refresh token.
- * @param {object} db - MySQL database connection pool.
- * @param {string} userId - Internal application user ID.
- * @param {string} googleRefreshToken - The refresh token obtained from Google.
- * @returns {Promise<string>} - A promise that resolves with the new access token.
- */
 async function refreshGoogleAccessToken(db, userId, googleRefreshToken) {
-    console.log("Attempting to refresh Google access token for user:", userId);
+    console.log("Contacts Route: Attempting to refresh Google access token for user:", userId);
+    if (!oauthClient) {
+        console.error("Contacts Route: oauthClient not initialized. Cannot refresh token.");
+        throw new Error("OAuth client not configured.");
+    }
     try {
         oauthClient.setCredentials({ refresh_token: googleRefreshToken });
         const { credentials } = await oauthClient.refreshAccessToken();
@@ -65,7 +61,6 @@ async function refreshGoogleAccessToken(db, userId, googleRefreshToken) {
         const newAccessToken = credentials.access_token;
         const newExpiryDate = new Date(credentials.expiry_date);
 
-        // Update the database with the new access token and expiry
         await db.execute(
             `UPDATE users SET
              google_access_token = ?,
@@ -74,18 +69,18 @@ async function refreshGoogleAccessToken(db, userId, googleRefreshToken) {
              WHERE id = ?`,
             [newAccessToken, newExpiryDate, userId]
         );
-        console.log("Google access token successfully refreshed and updated in DB for user:", userId);
+        console.log("Contacts Route: Google access token successfully refreshed and updated in DB for user:", userId);
         return newAccessToken;
     } catch (refreshError) {
-        console.error("Error refreshing Google access token for user:", userId, refreshError.message);
+        console.error("Contacts Route: Error refreshing Google access token for user:", userId, refreshError.message);
+        // Log the full error response from Google if available
+        if (refreshError.response && refreshError.response.data) {
+            console.error("Contacts Route: Google Refresh API Error Response Data:", refreshError.response.data);
+        }
         throw new Error("Failed to refresh Google access token.");
     }
 }
 
-// -----------------------------------------------------------------------------
-// GET /contacts/ – fetch user’s Google People connections
-// -----------------------------------------------------------------------------
-// This route will be mounted under /api, so the full path will be /api/contacts
 router.get("/", verifyAppJwt, async (req, res) => {
     try {
         console.log("Contacts Route: Received request to fetch contacts for user:", req.userId);
@@ -95,8 +90,13 @@ router.get("/", verifyAppJwt, async (req, res) => {
             console.error("Contacts Route: Database instance not found in app.locals.");
             return res.status(500).json({ error: "Database not initialized." });
         }
+        if (!oauthClient) {
+            console.error("Contacts Route: OAuth client not initialized due to missing environment variables.");
+            return res.status(500).json({ error: "Server configuration error for Google OAuth." });
+        }
+        console.log(`Contacts Route: Env Vars Check: CLIENT_ID=${CLIENT_ID ? 'Set' : 'Not Set'}, CLIENT_SECRET=${CLIENT_SECRET ? 'Set' : 'Not Set'}, REDIRECT_URI=${REDIRECT_URI ? 'Set' : 'Not Set'}`);
 
-        // Fetch user's Google tokens from MySQL
+
         const [userRows] = await db.execute(
             'SELECT google_id, google_access_token, google_refresh_token, access_token_expires_at FROM users WHERE id = ?',
             [req.userId]
@@ -109,7 +109,6 @@ router.get("/", verifyAppJwt, async (req, res) => {
 
         let { google_id: googleUid, google_access_token: googleAccessToken, google_refresh_token: googleRefreshToken, access_token_expires_at: accessTokenExpiresAt } = userRows[0];
 
-        // --- Token Refresh Logic ---
         const now = new Date();
         const expiryThreshold = 5 * 60 * 1000; // Refresh if token expires in next 5 minutes
 
@@ -119,7 +118,6 @@ router.get("/", verifyAppJwt, async (req, res) => {
                     googleAccessToken = await refreshGoogleAccessToken(db, req.userId, googleRefreshToken);
                 } catch (refreshErr) {
                     console.error("Contacts Route: Failed to refresh token, forcing re-authentication:", refreshErr.message);
-                    // If refresh fails, instruct frontend to re-authenticate
                     return res.status(401).json({ error: "Google access token expired and refresh failed. Please re-authenticate." });
                 }
             } else {
@@ -133,7 +131,12 @@ router.get("/", verifyAppJwt, async (req, res) => {
             return res.status(401).json({ error: "Failed to obtain valid Google access token. Please re-authenticate." });
         }
 
-        console.log("Contacts Route: Calling Google People API with valid access token.");
+        console.log("Contacts Route: Access Token Status: Valid and ready for API call.");
+        console.log("Contacts Route: Google People API URL:", "[https://people.googleapis.com/v1/people/me/connections](https://people.googleapis.com/v1/people/me/connections)");
+        console.log("Contacts Route: Access Token Length (for debug):", googleAccessToken ? googleAccessToken.length : 'null/undefined');
+        console.log("Contacts Route: Access Token Starts With (for debug):", googleAccessToken ? googleAccessToken.substring(0, 10) : 'null/undefined');
+
+
         // Call Google People API
         const { data } = await axios.get(
             "[https://people.googleapis.com/v1/people/me/connections](https://people.googleapis.com/v1/people/me/connections)",
@@ -181,9 +184,12 @@ router.get("/", verifyAppJwt, async (req, res) => {
 
     } catch (err) {
         console.error("Contacts Route: Error fetching Google contacts:", err.response?.data || err.message);
+        // Log the full error response from Google if available
+        if (err.response && err.response.data) {
+            console.error("Contacts Route: Google People API Error Response Data:", err.response.data);
+        }
         // If Google API returns 401/403, it means Google access token is expired/invalid
         if (err.response && (err.response.status === 401 || err.response.status === 403)) {
-            // This case should now be handled by the refresh logic, but as a fallback
             return res.status(401).json({ error: "Google access token expired. Please re-authenticate via login." });
         }
         return res.status(500).json({ error: "Failed to fetch contacts", details: err.message });
