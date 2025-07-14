@@ -1,167 +1,140 @@
-// backend/routes/auth.js
-
 var express = require("express");
 var router = express.Router();
 const { OAuth2Client } = require("google-auth-library");
 const jwt = require("jsonwebtoken");
 
 const generateAppJwtToken = (userId, jwtSecret) => {
-  return jwt.sign({ userId }, jwtSecret, { expiresIn: '1h' });
+  return jwt.sign({ userId }, jwtSecret, { expiresIn: '1h' });
 };
 
+// === START OAUTH ===
 router.get("/auth/google", (req, res) => {
-  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-  const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
+  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+  const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
 
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_REDIRECT_URI) {
-    console.error('CRITICAL ERROR: Google OAuth config missing for /auth/google redirect.');
-    return res.status(500).json({ message: 'Server OAuth configuration error.' });
-  }
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_REDIRECT_URI) {
+    console.error('CRITICAL ERROR: Google OAuth config missing.');
+    return res.status(500).json({ message: 'Server OAuth configuration error.' });
+  }
 
-  const client = new OAuth2Client(GOOGLE_CLIENT_ID, '', GOOGLE_REDIRECT_URI);
+  const client = new OAuth2Client(GOOGLE_CLIENT_ID, '', GOOGLE_REDIRECT_URI);
 
-  const authUrl = client.generateAuthUrl({
-    access_type: "offline",
-    response_type: "code",
-    prompt: "consent",
-    scope: [
-      "[https://www.googleapis.com/auth/userinfo.profile](https://www.googleapis.com/auth/userinfo.profile)",
-      "[https://www.googleapis.com/auth/userinfo.email](https://www.googleapis.com/auth/userinfo.email)",
-    ].join(" "),
-  });
-  console.log("Auth Route: Redirecting to Google OAuth URL.");
-  res.redirect(authUrl);
+  const authUrl = client.generateAuthUrl({
+    access_type: "offline",
+    prompt: "consent",
+    scope: [
+      "https://www.googleapis.com/auth/userinfo.profile",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "openid",
+      "https://www.googleapis.com/auth/contacts.readonly",
+      "https://www.googleapis.com/auth/contacts.other.readonly"
+    ].join(" ")
+  });
+
+  res.redirect(authUrl);
 });
 
 router.get("/auth/google/callback", async (req, res) => {
-  const code = req.query.code;
-  const db = req.app.locals.db;
-  const jwtSecret = req.jwtSecret;
-  const FRONTEND_URL = process.env.FRONTEND_URL;
+  const code = req.query.code;
+  const db = req.app.locals.db;
+  const jwtSecret = req.jwtSecret;
+  const FRONTEND_URL = process.env.FRONTEND_URL;
 
-  if (!code) {
-    console.error("Auth Route: No authorization code received in OAuth callback.");
-    return res.redirect(`${FRONTEND_URL}/login?error=oauth_failed`);
-  }
-  if (!db) {
-    console.error("Auth Route: MySQL DB instance not found in app.locals.");
-    return res.redirect(`${FRONTEND_URL}/login?error=${encodeURIComponent("Backend DB not initialized.")}`);
-  }
-  if (!jwtSecret) {
-    console.error('Auth Route: JWT_SECRET not available.');
-    return res.redirect(`${FRONTEND_URL}/login?error=${encodeURIComponent("Server configuration error.")}`);
-  }
-  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-  const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-  const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REDIRECT_URI) {
-    console.error('Auth Route: Google OAuth environment variables missing for callback.');
-    return res.redirect(`${FRONTEND_URL}/login?error=${encodeURIComponent("Server OAuth configuration error.")}`);
-  }
+  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+  const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+  const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
 
-  try {
-    const client = new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
+  if (!code || !db || !jwtSecret || !GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REDIRECT_URI) {
+    console.error("Missing configuration or code");
+    return res.redirect(`${FRONTEND_URL}/login?error=oauth_failed`);
+  }
 
-    console.log("Auth Route: Attempting to exchange code for tokens...");
-    const { tokens } = await client.getToken(code);
-    console.log("Auth Route: Successfully exchanged code for tokens!");
+  try {
+    const client = new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
+    const { tokens } = await client.getToken(code);
+    const ticket = await client.verifyIdToken({
+      idToken: tokens.id_token,
+      audience: GOOGLE_CLIENT_ID
+    });
 
-    const ticket = await client.verifyIdToken({
-      idToken: tokens.id_token,
-      audience: GOOGLE_CLIENT_ID,
-    });
-    const googleUserPayload = ticket.getPayload();
+    const payload = ticket.getPayload();
+    const googleId = payload.sub;
+    const email = payload.email;
+    const name = payload.name || payload.email;
+    const profilePictureUrl = payload.picture;
+    const accessTokenExpiresAt = new Date(tokens.expiry_date);
 
-    const googleId = googleUserPayload.sub;
-    const email = googleUserPayload.email;
-    const name = googleUserPayload.name || googleUserPayload.email;
-    const profilePictureUrl = googleUserPayload.picture;
+    let userId;
+    const [rows] = await db.execute('SELECT id FROM users WHERE google_id = ?', [googleId]);
 
-    const accessTokenExpiresAt = new Date(tokens.expiry_date);
+    if (rows.length > 0) {
+      userId = rows[0].id;
+      await db.execute(
+        `UPDATE users SET
+          google_access_token = ?,
+          google_refresh_token = ?,
+          access_token_expires_at = ?,
+          name = ?,
+          email = ?,
+          profile_picture_url = ?,
+          updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [
+          tokens.access_token,
+          tokens.refresh_token || null,
+          accessTokenExpiresAt,
+          name,
+          email,
+          profilePictureUrl,
+          userId
+        ]
+      );
+    } else {
+      const [result] = await db.execute(
+        `INSERT INTO users
+          (google_id, email, name, profile_picture_url, google_access_token, google_refresh_token, access_token_expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          googleId,
+          email,
+          name,
+          profilePictureUrl,
+          tokens.access_token,
+          tokens.refresh_token || null,
+          accessTokenExpiresAt
+        ]
+      );
+      userId = result.insertId;
+    }
 
-    let userId;
-    const [rows] = await db.execute('SELECT id FROM users WHERE google_id = ?', [googleId]);
+    const appJwt = generateAppJwtToken(userId, jwtSecret);
 
-    if (rows.length > 0) {
-      userId = rows[0].id;
-      // Corrected UPDATE query and parameters
-      await db.execute(
-        `UPDATE users SET
-          google_access_token = ?,
-          google_refresh_token = ?,
-          access_token_expires_at = ?,
-          name = ?,
-          email = ?,
-          profile_picture_url = ?,
-          updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [
-          tokens.access_token,
-          tokens.refresh_token || null, // Pass null if refresh_token is undefined
-          accessTokenExpiresAt,
-          name,
-          email,
-          profilePictureUrl,
-          userId
-        ]
-      );
-      console.log(`User ${userId} (Google ID: ${googleId}) updated with new Google tokens.`);
-    } else {
-      // Corrected INSERT query and parameters
-      const [result] = await db.execute(
-        `INSERT INTO users (google_id, email, name, profile_picture_url, google_access_token, google_refresh_token, access_token_expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          googleId,
-          email,
-          name,
-          profilePictureUrl,
-          tokens.access_token,
-          tokens.refresh_token || null, // Pass null if refresh_token is undefined
-          accessTokenExpiresAt
-        ]
-      );
-      userId = result.insertId;
-      console.log(`New user ${userId} (Google ID: ${googleId}) created from Google OAuth.`);
-    }
+    res.cookie('app_jwt', appJwt, {
+      httpOnly: true,
+      secure: true,
+      maxAge: 3600000,
+      sameSite: 'None',
+      domain: '.gitthit.com.ng',
+      path: '/'
+    });
 
-    const appJwt = generateAppJwtToken(userId, jwtSecret);
-    console.log("Auth Route: Generated app_jwt:", appJwt ? "Generated" : "Error - not generated");
-
-
-    // --- Cookie settings (already correct for cross-subdomain) ---
-    res.cookie('app_jwt', appJwt, {
-      httpOnly: true,
-      secure: true, // MUST be true for SameSite: 'None'
-      maxAge: 3600000, // 1 hour in milliseconds (matches JWT expiry)
-      sameSite: 'None', // Allow cross-site cookie sending (essential for different subdomains)
-      domain: '.gitthit.com.ng', // Correctly set for all subdomains of gitthit.com.ng
-      path: '/' // Ensure cookie is available across all paths
-    });
-
-    // Send the redirect after setting the cookie.
-    res.setHeader('Location', `${FRONTEND_URL}/dashboard`);
-    res.status(302).end(); // Send 302 status and end response
-
-  } catch (error) {
-    console.error("Auth Route: Error during OAuth callback:", error.message);
-    if (error.response) {
-      console.error("Auth Route: Google API Error Response Data:", error.response.data);
-    }
-    res.redirect(`${FRONTEND_URL}/login?error=${encodeURIComponent(error.message || "oauth_failed")}`);
-  }
+    res.redirect(`${FRONTEND_URL}/dashboard`);
+  } catch (error) {
+    console.error("OAuth callback error:", error.message);
+    res.redirect(`${FRONTEND_URL}/login?error=${encodeURIComponent(error.message || "oauth_failed")}`);
+  }
 });
 
+// === LOGOUT ===
 router.post('/auth/logout', (req, res) => {
-  // When clearing the cookie, SameSite and Secure attributes must match
-  res.clearCookie('app_jwt', {
-    httpOnly: true,
-    secure: true, // MUST be true
-    sameSite: 'None', // MUST be 'None'
-    domain: '.gitthit.com.ng', // Must match the domain used when setting
-    path: '/' // Must match the path used when setting
-  });
-  res.status(200).json({ message: 'Logged out successfully' });
+  res.clearCookie('app_jwt', {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'None',
+    domain: '.gitthit.com.ng',
+    path: '/'
+  });
+  res.status(200).json({ message: 'Logged out successfully' });
 });
 
 module.exports = router;
