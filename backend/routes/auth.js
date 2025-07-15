@@ -6,7 +6,7 @@ const { OAuth2Client } = require("google-auth-library");
 const jwt = require("jsonwebtoken");
 
 const generateAppJwtToken = (userId, jwtSecret) => {
-  return jwt.sign({ userId }, jwtSecret, { expiresIn: '1h' });
+  return jwt.sign({ userId }, jwtSecret, { expiresIn: "1h" });
 };
 
 // === START OAUTH ===
@@ -15,22 +15,23 @@ router.get("/auth/google", (req, res) => {
   const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
 
   if (!GOOGLE_CLIENT_ID || !GOOGLE_REDIRECT_URI) {
-    console.error('CRITICAL ERROR: Google OAuth config missing.');
-    return res.status(500).json({ message: 'Server OAuth configuration error.' });
+    console.error("CRITICAL ERROR: Google OAuth config missing.");
+    return res.status(500).json({ message: "Server OAuth configuration error." });
   }
 
-  const client = new OAuth2Client(GOOGLE_CLIENT_ID, '', GOOGLE_REDIRECT_URI);
+  const client = new OAuth2Client(GOOGLE_CLIENT_ID, "", GOOGLE_REDIRECT_URI);
 
   const authUrl = client.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
+    include_granted_scopes: false,
     scope: [
+      "openid",
       "https://www.googleapis.com/auth/userinfo.profile",
       "https://www.googleapis.com/auth/userinfo.email",
-      "openid",
       "https://www.googleapis.com/auth/contacts.readonly",
       "https://www.googleapis.com/auth/contacts.other.readonly"
-    ].join(" ")
+    ]
   });
 
   res.redirect(authUrl);
@@ -113,13 +114,13 @@ router.get("/auth/google/callback", async (req, res) => {
 
     const appJwt = generateAppJwtToken(userId, jwtSecret);
 
-    res.cookie('app_jwt', appJwt, {
+    res.cookie("app_jwt", appJwt, {
       httpOnly: true,
       secure: true,
       maxAge: 3600000, // 1 hour
-      sameSite: 'None',
-      domain: '.gitthit.com.ng',
-      path: '/'
+      sameSite: "None",
+      domain: ".gitthit.com.ng",
+      path: "/"
     });
 
     res.redirect(`${FRONTEND_URL}/dashboard`);
@@ -130,15 +131,15 @@ router.get("/auth/google/callback", async (req, res) => {
 });
 
 // === LOGOUT ===
-router.post('/auth/logout', (req, res) => {
-  res.clearCookie('app_jwt', {
+router.post("/auth/logout", (req, res) => {
+  res.clearCookie("app_jwt", {
     httpOnly: true,
     secure: true,
-    sameSite: 'None',
-    domain: '.gitthit.com.ng',
-    path: '/'
+    sameSite: "None",
+    domain: ".gitthit.com.ng",
+    path: "/"
   });
-  res.status(200).json({ message: 'Logged out successfully' });
+  res.status(200).json({ message: "Logged out successfully" });
 });
 
 module.exports = router;
