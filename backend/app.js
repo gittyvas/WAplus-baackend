@@ -1,6 +1,6 @@
 // backend/app.js
 
-require("dotenv").config(); // 🔹 Always first
+require("dotenv").config();
 const createError = require("http-errors");
 const express = require("express");
 const path = require("path");
@@ -15,14 +15,13 @@ const createDbPool = require("./db");
 
 const app = express();
 
-// --- Critical ENV checks ---
+// --- Required Environment Variables ---
 if (!process.env.FRONTEND_URL) throw new Error("FRONTEND_URL is missing");
 if (!process.env.APP_ID) throw new Error("APP_ID is missing");
 if (!process.env.JWT_SECRET) throw new Error("JWT_SECRET is missing");
 if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !process.env.GOOGLE_REDIRECT_URI)
   throw new Error("Google OAuth env vars are missing");
 
-// Detect prod mode
 const isProduction = process.env.NODE_ENV === "production";
 
 // --- Middleware ---
@@ -48,7 +47,7 @@ app.use(session({
   },
 }));
 
-// --- Passport config ---
+// --- Passport Setup ---
 app.use(passport.initialize());
 app.use(passport.session());
 
@@ -70,13 +69,16 @@ passport.use(new GoogleStrategy({
 }));
 
 passport.serializeUser((user, done) => {
-  done(null, user.id); // Google's ID
+  done(null, user.id);
 });
 
 passport.deserializeUser(async (id, done) => {
   try {
     const db = app.locals.db;
-    const [rows] = await db.execute(`SELECT id, name AS displayName, email, profile_picture_url AS photoURL FROM users WHERE google_id = ?`, [id]);
+    const [rows] = await db.execute(
+      `SELECT id, name AS displayName, email, profile_picture_url AS photoURL FROM users WHERE google_id = ?`,
+      [id]
+    );
     if (rows.length === 0) return done(null, false);
     done(null, rows[0]);
   } catch (err) {
@@ -85,7 +87,7 @@ passport.deserializeUser(async (id, done) => {
   }
 });
 
-// --- Attach app_id, jwtSecret, and userId ---
+// Attach constants to all requests
 app.use((req, res, next) => {
   req.app_id = process.env.APP_ID;
   req.jwtSecret = process.env.JWT_SECRET;
@@ -100,29 +102,25 @@ app.initialize = async () => {
     app.locals.db = dbPool;
     console.log("✅ MySQL pool initialized");
 
-    // ROUTES
+    // Routes - Make sure each route file exports a valid router!
     const indexRouter = require("./routes/index");
     const authRouter = require("./routes/auth");
     const apiRouter = require("./routes/api");
     const contactsRouter = require("./routes/contacts");
-    const userRouter = require("./routes/user"); // ✅ Handles /api/user/profile etc.
+    const userRouter = require("./routes/user");
 
     app.use("/", indexRouter);
-    app.use("/", authRouter); // Handles /auth/google etc.
+    app.use("/", authRouter);
     app.use("/api", apiRouter);
     app.use("/api/contacts", contactsRouter);
-    app.use("/api/user", userRouter);
+    app.use("/api/user", userRouter); // 🧠 Make sure userRouter = express.Router()
 
-    // Remove this if you've already moved everything to `/api/user`
-    // const profileRouter = require("./routes/profile");
-    // app.use("/api/profile", profileRouter);
-
-    // 404
+    // 404 handler
     app.use((req, res, next) => {
       next(createError(404));
     });
 
-    // Global error handler
+    // Error handler
     app.use((err, req, res, next) => {
       console.error("🚨 Error:", err.stack);
       res.status(err.status || 500).json({
