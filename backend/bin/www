@@ -15,7 +15,7 @@ var http = require('http');
 var port = normalizePort(process.env.PORT || '3000');
 
 // Declare 'server' in a higher scope so it's accessible to onListening and onError
-var server; 
+var server;
 
 /**
  * Initialize app (database connection, routes, etc.) and create HTTP server.
@@ -24,9 +24,10 @@ var server;
 
 async function startServer() {
   try {
-    // 1. Initialize the application.
+    // 1. Initialize the application. This calls app.initialize() from app.js
+    // which handles database connection, route setup, etc.
     await app.initialize();
-    
+
     // 2. Set the port on the *now fully initialized* Express app instance.
     app.set('port', port);
 
@@ -111,5 +112,6 @@ function onListening() {
     ? 'pipe ' + addr
     : 'port ' + addr.port;
   debug('Listening on ' + bind);
-  console.log(`Backend server listening on ${bind}`);
+  console.log(`Backend server listening on ${bind}`); // Added for clearer console output
 }
+
