@@ -2,21 +2,24 @@
 const express = require('express');
 const router = express.Router();
 const profileController = require('../controllers/profileController');
-const verifyAuthToken = require('../middleware/verifyAuthToken'); // Your authentication middleware
+const verifyAuthToken = require('../middleware/verifyAuthToken'); // Authentication middleware
 
-// Protect all profile routes with authentication middleware
-router.use(verifyAuthToken); // Assuming verifyAuthToken attaches req.user.uid and req.app_id
+// ✅ Apply authentication middleware to all profile routes
+router.use(verifyAuthToken);
 
-// Route to disconnect Google account
-router.post('/disconnect', profileController.disconnectGoogleAccount);
+// ✅ Route to fetch user profile (used in frontend/Profile.jsx)
+router.get('/user/profile', profileController.getUserProfile);
 
-// Route to delete user account
-router.delete('/account', profileController.deleteUserAccount);
+// ✅ Route to disconnect Google account
+router.post('/profile/disconnect', profileController.disconnectGoogleAccount);
 
-// Route to update notification settings
-router.post('/notifications', profileController.updateNotificationSettings);
+// ✅ Route to delete user account
+router.delete('/profile/account', profileController.deleteUserAccount);
 
-// Route to end a specific session (simplified)
-router.post('/sessions/end', profileController.endSession);
+// ✅ Route to update notification settings
+router.post('/profile/notifications', profileController.updateNotificationSettings);
+
+// ✅ Route to end a specific session
+router.post('/profile/sessions/end', profileController.endSession);
 
 module.exports = router;

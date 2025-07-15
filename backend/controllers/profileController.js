@@ -4,7 +4,8 @@ const db = admin.firestore(); // Get Firestore instance
 const authAdmin = admin.auth(); // Get Auth instance
 
 // Function to get user profile data
-exports.getProfile = async (req, res) => {
+// Renamed from getProfile to getUserProfile as requested
+exports.getUserProfile = async (req, res) => {
     try {
         const userId = req.user.uid; // User ID from your authentication middleware
         const appId = req.app_id; // App ID from your middleware
@@ -19,10 +20,13 @@ exports.getProfile = async (req, res) => {
             // You can return basic info from Firebase Auth if available.
             const firebaseUser = await authAdmin.getUser(userId);
             const profileData = {
-                displayName: firebaseUser.displayName || 'N/A',
+                name: firebaseUser.displayName || 'N/A', // Renamed to 'name' for frontend
                 email: firebaseUser.email || 'N/A',
-                photoURL: firebaseUser.photoURL || null,
+                profile_picture_url: firebaseUser.photoURL || null, // Renamed to 'profile_picture_url' for frontend
                 // Add any other default fields or info you want to send
+                emailNotifications: true, // Default if not in Firestore
+                pushNotifications: false, // Default if not in Firestore
+                sessions: [], // Default empty array for sessions
             };
             return res.status(200).json(profileData);
         }
@@ -30,13 +34,14 @@ exports.getProfile = async (req, res) => {
         const userData = userDoc.data();
         // Filter out sensitive data before sending to the frontend
         const profileData = {
-            displayName: userData.displayName || 'N/A',
+            name: userData.displayName || 'N/A', // Renamed to 'name' for frontend
             email: userData.email || 'N/A',
-            photoURL: userData.photoURL || null,
+            profile_picture_url: userData.photoURL || null, // Renamed to 'profile_picture_url' for frontend
             // Include notification settings if stored here
             emailNotifications: userData.notificationSettings?.email ?? true, // Default to true if not set
             pushNotifications: userData.notificationSettings?.push ?? false, // Default to false if not set
-            // Add any other relevant profile fields you store in Firestore
+            // Assuming sessions might be stored directly or fetched separately if needed
+            sessions: userData.sessions || [], // Include sessions if stored in user doc
         };
 
         res.status(200).json(profileData);
