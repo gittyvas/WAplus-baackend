@@ -1,140 +1,170 @@
-var express = require("express");
-var router = express.Router();
+// backend/routes/contacts.js
+// -----------------------------------------------------------------------------
+// Contacts route – fetches Google contacts for the authenticated Pulse user.
+// Uses the app_jwt (from HTTP-only cookie) for authentication,
+// then looks up the stored Google *access* token in the database to call People API.
+// Includes logic to refresh Google access token if expired.
+// -----------------------------------------------------------------------------
+
+const express = require("express");
+const router = express.Router();
+const axios = require("axios");
 const { OAuth2Client } = require("google-auth-library");
 const jwt = require("jsonwebtoken");
 
-const generateAppJwtToken = (userId, jwtSecret) => {
-  return jwt.sign({ userId }, jwtSecret, { expiresIn: '1h' });
-};
+// Environment variables
+const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
 
-// === START OAUTH ===
-router.get("/auth/google", (req, res) => {
-  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-  const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
+// Initialize Google OAuth client
+let oauthClient;
+if (CLIENT_ID && CLIENT_SECRET && REDIRECT_URI) {
+  oauthClient = new OAuth2Client(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
+} else {
+  console.error("CRITICAL: Google OAuth environment variables not fully set for contacts.js!");
+}
 
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_REDIRECT_URI) {
-    console.error('CRITICAL ERROR: Google OAuth config missing.');
-    return res.status(500).json({ message: 'Server OAuth configuration error.' });
-  }
-
-  const client = new OAuth2Client(GOOGLE_CLIENT_ID, '', GOOGLE_REDIRECT_URI);
-
-  const authUrl = client.generateAuthUrl({
-    access_type: "offline",
-    prompt: "consent",
-    scope: [
-      "https://www.googleapis.com/auth/userinfo.profile",
-      "https://www.googleapis.com/auth/userinfo.email",
-      "openid",
-      "https://www.googleapis.com/auth/contacts.readonly",
-      "https://www.googleapis.com/auth/contacts.other.readonly"
-    ].join(" ")
-  });
-
-  res.redirect(authUrl);
-});
-
-router.get("/auth/google/callback", async (req, res) => {
-  const code = req.query.code;
-  const db = req.app.locals.db;
+// Middleware: Verify app_jwt from cookie
+async function verifyAppJwt(req, res, next) {
+  const appJwt = req.cookies.app_jwt;
   const jwtSecret = req.jwtSecret;
-  const FRONTEND_URL = process.env.FRONTEND_URL;
 
-  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-  const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-  const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
-
-  if (!code || !db || !jwtSecret || !GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REDIRECT_URI) {
-    console.error("Missing configuration or code");
-    return res.redirect(`${FRONTEND_URL}/login?error=oauth_failed`);
+  if (!appJwt) {
+    console.warn("Contacts Route Auth: No app_jwt cookie found.");
+    return res.status(401).json({ error: "Unauthorized: No session token provided." });
+  }
+  if (!jwtSecret) {
+    console.error("Contacts Route Auth: JWT_SECRET not configured.");
+    return res.status(500).json({ error: "Server configuration error." });
   }
 
   try {
-    const client = new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
-    const { tokens } = await client.getToken(code);
-    const ticket = await client.verifyIdToken({
-      idToken: tokens.id_token,
-      audience: GOOGLE_CLIENT_ID
-    });
+    const decoded = jwt.verify(appJwt, jwtSecret);
+    req.userId = decoded.userId;
+    console.log("Contacts Route Auth: Verified app_jwt. User ID:", req.userId);
+    next();
+  } catch (err) {
+    console.error("Contacts Route Auth: Invalid/expired app_jwt:", err.message);
+    return res.status(401).json({ error: "Unauthorized: Invalid or expired session." });
+  }
+}
 
-    const payload = ticket.getPayload();
-    const googleId = payload.sub;
-    const email = payload.email;
-    const name = payload.name || payload.email;
-    const profilePictureUrl = payload.picture;
-    const accessTokenExpiresAt = new Date(tokens.expiry_date);
+// Helper: Refresh Google access token using refresh token
+async function refreshGoogleAccessToken(db, userId, googleRefreshToken) {
+  console.log("Contacts Route: Refreshing Google token for user:", userId);
 
-    let userId;
-    const [rows] = await db.execute('SELECT id FROM users WHERE google_id = ?', [googleId]);
+  try {
+    oauthClient.setCredentials({ refresh_token: googleRefreshToken });
+    const { credentials } = await oauthClient.refreshAccessToken();
 
-    if (rows.length > 0) {
-      userId = rows[0].id;
-      await db.execute(
-        `UPDATE users SET
-          google_access_token = ?,
-          google_refresh_token = ?,
-          access_token_expires_at = ?,
-          name = ?,
-          email = ?,
-          profile_picture_url = ?,
-          updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [
-          tokens.access_token,
-          tokens.refresh_token || null,
-          accessTokenExpiresAt,
-          name,
-          email,
-          profilePictureUrl,
-          userId
-        ]
-      );
-    } else {
-      const [result] = await db.execute(
-        `INSERT INTO users
-          (google_id, email, name, profile_picture_url, google_access_token, google_refresh_token, access_token_expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          googleId,
-          email,
-          name,
-          profilePictureUrl,
-          tokens.access_token,
-          tokens.refresh_token || null,
-          accessTokenExpiresAt
-        ]
-      );
-      userId = result.insertId;
+    const newAccessToken = credentials.access_token;
+    const newExpiryDate = new Date(credentials.expiry_date);
+
+    await db.execute(
+      `UPDATE users SET
+         google_access_token = ?,
+         access_token_expires_at = ?,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [newAccessToken, newExpiryDate, userId]
+    );
+
+    console.log("Contacts Route: Token refreshed and saved.");
+    return newAccessToken;
+  } catch (err) {
+    console.error("Contacts Route: Failed to refresh token:", err.message);
+    if (err.response?.data) {
+      console.error("Google API Error Response:", err.response.data);
+    }
+    throw new Error("Failed to refresh Google access token.");
+  }
+}
+
+// GET /contacts – Fetch Google contacts
+router.get("/", verifyAppJwt, async (req, res) => {
+  try {
+    console.log("Contacts Route: Fetching contacts for user:", req.userId);
+    const db = req.app.locals.db;
+
+    if (!db || !oauthClient) {
+      return res.status(500).json({ error: "Server configuration error." });
     }
 
-    const appJwt = generateAppJwtToken(userId, jwtSecret);
+    const [[user]] = await db.execute(
+      `SELECT google_id, google_access_token, google_refresh_token, access_token_expires_at
+       FROM users WHERE id = ?`,
+      [req.userId]
+    );
 
-    res.cookie('app_jwt', appJwt, {
-      httpOnly: true,
-      secure: true,
-      maxAge: 3600000,
-      sameSite: 'None',
-      domain: '.gitthit.com.ng',
-      path: '/'
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    let {
+      google_id: googleUid,
+      google_access_token: googleAccessToken,
+      google_refresh_token: googleRefreshToken,
+      access_token_expires_at: accessTokenExpiresAt,
+    } = user;
+
+    const now = new Date();
+    const expiresSoon = accessTokenExpiresAt && new Date(accessTokenExpiresAt).getTime() - now.getTime() < 5 * 60 * 1000;
+
+    if (!googleAccessToken || expiresSoon) {
+      if (googleRefreshToken) {
+        googleAccessToken = await refreshGoogleAccessToken(db, req.userId, googleRefreshToken);
+      } else {
+        return res.status(401).json({ error: "Missing access token. Please re-authenticate." });
+      }
+    }
+
+    if (!googleAccessToken) {
+      return res.status(401).json({ error: "No valid Google access token. Please re-authenticate." });
+    }
+
+    // ✅ FIXED: Use plain string for the API URL
+    const googlePeopleApiUrl = "https://people.googleapis.com/v1/people/me/connections";
+
+    const { data } = await axios.get(googlePeopleApiUrl, {
+      headers: { Authorization: `Bearer ${googleAccessToken}` },
+      params: {
+        personFields: "names,emailAddresses,phoneNumbers,photos,metadata",
+        pageSize: 200,
+      },
     });
 
-    res.redirect(`${FRONTEND_URL}/dashboard`);
-  } catch (error) {
-    console.error("OAuth callback error:", error.message);
-    res.redirect(`${FRONTEND_URL}/login?error=${encodeURIComponent(error.message || "oauth_failed")}`);
-  }
-});
+    const connections = data.connections || [];
 
-// === LOGOUT ===
-router.post('/auth/logout', (req, res) => {
-  res.clearCookie('app_jwt', {
-    httpOnly: true,
-    secure: true,
-    sameSite: 'None',
-    domain: '.gitthit.com.ng',
-    path: '/'
-  });
-  res.status(200).json({ message: 'Logged out successfully' });
+    const processedContacts = connections
+      .map((c) => {
+        const name = c.names?.[0]?.displayName || "No Name";
+        const email = c.emailAddresses?.[0]?.value || "No Email";
+        const phone = c.phoneNumbers?.[0]?.value || "No Phone";
+        const photo = c.photos?.[0]?.url || null;
+        const lastUpdated = c.metadata?.sources?.[0]?.updateTime || "N/A";
+
+        return {
+          id: c.resourceName,
+          name,
+          email,
+          phone,
+          photo,
+          lastUpdated,
+          raw: c,
+        };
+      })
+      .filter((contact) => contact.name !== "No Name" || contact.email !== "No Email");
+
+    console.log(`Contacts Route: Returned ${processedContacts.length} contacts.`);
+    res.json(processedContacts);
+  } catch (err) {
+    console.error("Contacts Route: Error:", err.response?.data || err.message);
+    if (err.response?.status === 401 || err.response?.status === 403) {
+      return res.status(401).json({ error: "Google access token expired. Please re-authenticate." });
+    }
+    res.status(500).json({ error: "Failed to fetch contacts", details: err.message });
+  }
 });
 
 module.exports = router;
