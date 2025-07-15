@@ -106,9 +106,9 @@ router.get("/", verifyAppJwt, async (req, res) => {
     }
 
     // Retrieve Google tokens from the database for the current user
+    // --- CRITICAL SQL FIX HERE ---
     const [userRows] = await db.execute(
-      `SELECT google_id, google_access_token, google_refresh_token, access_token_expires_at
-       FROM users WHERE id = ?`,
+      `SELECT google_id, google_access_token, google_refresh_token, access_token_expires_at FROM users WHERE id = ?`,
       [req.userId]
     );
 
