@@ -1,83 +1,129 @@
 // backend/app.js
 
-var createError = require("http-errors");
-var express = require("express");
-var path = require("path");
-var cookieParser = require("cookie-parser");
-var logger = require("morgan");
-var cors = require("cors");
+require("dotenv").config(); // 🔹 Always first
+const createError = require("http-errors");
+const express = require("express");
+const path = require("path");
+const cookieParser = require("cookie-parser");
+const logger = require("morgan");
+const cors = require("cors");
 const jwt = require("jsonwebtoken");
-
+const session = require("express-session");
+const passport = require("passport");
+const GoogleStrategy = require("passport-google-oauth20").Strategy;
 const createDbPool = require("./db");
-require("dotenv").config();
 
-var app = express();
+const app = express();
 
 // --- Critical ENV checks ---
-if (!process.env.FRONTEND_URL) {
-  console.error("CRITICAL ERROR: FRONTEND_URL environment variable is not set!");
-  process.exit(1);
-}
-if (!process.env.APP_ID) {
-  console.error("CRITICAL ERROR: APP_ID environment variable is not set!");
-  process.exit(1);
-}
-if (!process.env.JWT_SECRET) {
-  console.error("CRITICAL ERROR: JWT_SECRET environment variable is not set!");
-  process.exit(1);
-}
-if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !process.env.GOOGLE_REDIRECT_URI) {
-  console.error("CRITICAL ERROR: Google OAuth environment variables are missing!");
-  process.exit(1);
-}
+if (!process.env.FRONTEND_URL) throw new Error("FRONTEND_URL is missing");
+if (!process.env.APP_ID) throw new Error("APP_ID is missing");
+if (!process.env.JWT_SECRET) throw new Error("JWT_SECRET is missing");
+if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !process.env.GOOGLE_REDIRECT_URI)
+  throw new Error("Google OAuth env vars are missing");
+
+// Detect prod mode
+const isProduction = process.env.NODE_ENV === "production";
 
 // --- Middleware ---
-app.use(
-  cors({
-    origin: process.env.FRONTEND_URL,
-    credentials: true,
-  })
-);
+app.use(cors({
+  origin: process.env.FRONTEND_URL,
+  credentials: true,
+}));
 app.use(logger("dev"));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 
-// Attach app_id and jwtSecret to every request
+// --- Session ---
+app.use(session({
+  secret: process.env.JWT_SECRET,
+  resave: false,
+  saveUninitialized: true,
+  cookie: {
+    secure: isProduction,
+    httpOnly: true,
+    sameSite: isProduction ? "none" : "lax",
+    maxAge: 24 * 60 * 60 * 1000,
+  },
+}));
+
+// --- Passport config ---
+app.use(passport.initialize());
+app.use(passport.session());
+
+passport.use(new GoogleStrategy({
+  clientID: process.env.GOOGLE_CLIENT_ID,
+  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+  callbackURL: process.env.GOOGLE_REDIRECT_URI,
+  passReqToCallback: true,
+}, async (req, accessToken, refreshToken, profile, done) => {
+  const user = {
+    id: profile.id,
+    displayName: profile.displayName,
+    email: profile.emails?.[0]?.value,
+    photoURL: profile.photos?.[0]?.value,
+    accessToken,
+    refreshToken
+  };
+  done(null, user);
+}));
+
+passport.serializeUser((user, done) => {
+  done(null, user.id); // Google's ID
+});
+
+passport.deserializeUser(async (id, done) => {
+  try {
+    const db = app.locals.db;
+    const [rows] = await db.execute(`SELECT id, name AS displayName, email, profile_picture_url AS photoURL FROM users WHERE google_id = ?`, [id]);
+    if (rows.length === 0) return done(null, false);
+    done(null, rows[0]);
+  } catch (err) {
+    console.error("deserializeUser error:", err);
+    done(err);
+  }
+});
+
+// --- Attach app_id, jwtSecret, and userId ---
 app.use((req, res, next) => {
   req.app_id = process.env.APP_ID;
   req.jwtSecret = process.env.JWT_SECRET;
+  req.userId = req.user ? req.user.id : null;
   next();
 });
 
-// --- Async initialization (DB + routes) ---
-app.initialize = async function () {
+// --- Async initialization: DB + Routes ---
+app.initialize = async () => {
   try {
     const dbPool = await createDbPool();
     app.locals.db = dbPool;
-    console.log("✅ MySQL pool initialized.");
+    console.log("✅ MySQL pool initialized");
 
     // ROUTES
-    var indexRouter = require("./routes/index");
-    var authRouter = require("./routes/auth");
-    var apiRouter = require("./routes/api");
-    var contactsRouter = require("./routes/contacts");
-    var profileRouter = require("./routes/profile"); // ✅ NEW
+    const indexRouter = require("./routes/index");
+    const authRouter = require("./routes/auth");
+    const apiRouter = require("./routes/api");
+    const contactsRouter = require("./routes/contacts");
+    const userRouter = require("./routes/user"); // ✅ Handles /api/user/profile etc.
 
-    // Mount routes
     app.use("/", indexRouter);
-    app.use("/", authRouter);
+    app.use("/", authRouter); // Handles /auth/google etc.
     app.use("/api", apiRouter);
     app.use("/api/contacts", contactsRouter);
-    app.use("/api/profile", profileRouter); // ✅ Mount profile routes here
+    app.use("/api/user", userRouter);
 
-    // Catch 404
-    app.use(function (req, res, next) {
+    // Remove this if you've already moved everything to `/api/user`
+    // const profileRouter = require("./routes/profile");
+    // app.use("/api/profile", profileRouter);
+
+    // 404
+    app.use((req, res, next) => {
       next(createError(404));
     });
 
-    // Error Handler
-    app.use(function (err, req, res, next) {
+    // Global error handler
+    app.use((err, req, res, next) => {
       console.error("🚨 Error:", err.stack);
       res.status(err.status || 500).json({
         message: err.message,
@@ -87,7 +133,7 @@ app.initialize = async function () {
 
     return app;
   } catch (err) {
-    console.error("❌ Fatal error during initialization:", err);
+    console.error("❌ Failed to initialize app:", err);
     process.exit(1);
   }
 };

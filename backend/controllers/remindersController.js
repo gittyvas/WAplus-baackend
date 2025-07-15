@@ -1,183 +1,83 @@
-// google-oauth-app/google-oauth-app/backend/controllers/remindersController.js
+// backend/controllers/remindersController.js
 
-// const { getFirestore } = require("firebase-admin/firestore"); // Removed: Will use req.app.locals.db
-const { v4: uuidv4 } = require("uuid"); // For generating unique IDs
-
-require("dotenv").config();
-const APP_ID = process.env.APP_ID || "default-app-id";
-
-/**
- * Get all reminders for the authenticated user.
- */
+// Function to get reminders for the authenticated user
 exports.getReminders = async (req, res) => {
-  console.log("\n--- Reminders Controller: getReminders Start ---");
-  console.log("Reminders Controller: User ID:", req.user.userId);
-
-  if (!req.user || !req.user.userId) {
-    console.error("Reminders Controller: User not authenticated.");
-    return res.status(401).json({ message: "User not authenticated." });
-  }
-
-  try {
-    // Access Firestore instance from app.locals
     const db = req.app.locals.db;
-    if (!db) {
-      console.error("Reminders Controller: Firestore DB instance not found in app.locals.");
-      return res.status(500).json({ message: "Firebase DB not initialized in backend." });
+    const userId = req.userId; // Use req.userId
+
+    try {
+        const [rows] = await db.execute('SELECT id, user_id, title, due_date, created_at FROM reminders WHERE user_id = ? ORDER BY created_at DESC', [userId]);
+        res.status(200).json(rows);
+    } catch (error) {
+        console.error('RemindersController: Error fetching reminders:', error);
+        res.status(500).json({ message: 'Failed to fetch reminders.' });
     }
-
-    const remindersCollectionRef = db.collection(`artifacts/${APP_ID}/users/${req.user.userId}/reminders`);
-    const snapshot = await remindersCollectionRef.get();
-
-    const reminders = snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    }));
-
-    console.log(`Reminders Controller: Found ${reminders.length} reminders.`);
-    res.status(200).json({ reminders });
-  } catch (error) {
-    console.error("Reminders Controller: Error fetching reminders:", error.message);
-    res.status(500).json({ message: "Failed to fetch reminders.", error: error.message });
-  } finally {
-    console.log("--- Reminders Controller: getReminders End ---\n");
-  }
 };
 
-/**
- * Create a new reminder for the authenticated user.
- */
+// Function to create a new reminder
 exports.createReminder = async (req, res) => {
-  console.log("\n--- Reminders Controller: createReminder Start ---");
-  console.log("Reminders Controller: User ID:", req.user.userId);
-  console.log("Reminders Controller: Request Body:", req.body);
-
-  const { title, description, dueDate } = req.body;
-
-  if (!title || !dueDate) {
-    console.error("Reminders Controller: Missing title or dueDate for new reminder.");
-    return res.status(400).json({ message: "Title and Due Date are required." });
-  }
-  if (!req.user || !req.user.userId) {
-    console.error("Reminders Controller: User not authenticated.");
-    return res.status(401).json({ message: "User not authenticated." });
-  }
-
-  try {
-    // Access Firestore instance from app.locals
     const db = req.app.locals.db;
-    if (!db) {
-      console.error("Reminders Controller: Firestore DB instance not found in app.locals.");
-      return res.status(500).json({ message: "Firebase DB not initialized in backend." });
+    const userId = req.userId; // Use req.userId
+    const { title, due_date } = req.body;
+
+    if (!title) {
+        return res.status(400).json({ message: 'Reminder title is required.' });
     }
 
-    const remindersCollectionRef = db.collection(`artifacts/${APP_ID}/users/${req.user.userId}/reminders`);
-
-    const newReminder = {
-      id: uuidv4(), // Generate a unique ID for the reminder
-      title,
-      description: description || "",
-      dueDate: new Date(dueDate).toISOString(), // Store as ISO string
-      completed: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    await remindersCollectionRef.doc(newReminder.id).set(newReminder); // Use set with doc.id for explicit ID
-
-    console.log("Reminders Controller: New reminder created:", newReminder.id);
-    res.status(201).json({ message: "Reminder created successfully.", reminder: newReminder });
-  } catch (error) {
-    console.error("Reminders Controller: Error creating reminder:", error.message);
-    res.status(500).json({ message: "Failed to create reminder.", error: error.message });
-  } finally {
-    console.log("--- Reminders Controller: createReminder End ---\n");
-  }
+    try {
+        const [result] = await db.execute(
+            'INSERT INTO reminders (user_id, title, due_date) VALUES (?, ?, ?)',
+            [userId, title, due_date || null]
+        );
+        res.status(201).json({ id: result.insertId, message: 'Reminder created successfully.' });
+    } catch (error) {
+        console.error('RemindersController: Error creating reminder:', error);
+        res.status(500).json({ message: 'Failed to create reminder.' });
+    }
 };
 
-/**
- * Update an existing reminder for the authenticated user.
- */
+// Function to update an existing reminder
 exports.updateReminder = async (req, res) => {
-  console.log("\n--- Reminders Controller: updateReminder Start ---");
-  console.log("Reminders Controller: User ID:", req.user.userId);
-  console.log("Reminders Controller: Reminder ID:", req.params.id);
-  console.log("Reminders Controller: Request Body:", req.body);
-
-  const { id } = req.params;
-  const updates = req.body;
-
-  if (!req.user || !req.user.userId) {
-    console.error("Reminders Controller: User not authenticated.");
-    return res.status(401).json({ message: "User not authenticated." });
-  }
-
-  try {
-    // Access Firestore instance from app.locals
     const db = req.app.locals.db;
-    if (!db) {
-      console.error("Reminders Controller: Firestore DB instance not found in app.locals.");
-      return res.status(500).json({ message: "Firebase DB not initialized in backend." });
+    const userId = req.userId; // Use req.userId
+    const reminderId = req.params.id;
+    const { title, due_date } = req.body;
+
+    if (!title) {
+        return res.status(400).json({ message: 'Reminder title is required for update.' });
     }
 
-    const reminderDocRef = db.collection(`artifacts/${APP_ID}/users/${req.user.userId}/reminders`).doc(id);
-    const reminderDoc = await reminderDocRef.get();
+    try {
+        const [result] = await db.execute(
+            'UPDATE reminders SET title = ?, due_date = ?, created_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
+            [title, due_date || null, reminderId, userId]
+        );
 
-    if (!reminderDoc.exists) {
-      console.warn("Reminders Controller: Reminder not found for update:", id);
-      return res.status(404).json({ message: "Reminder not found." });
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'Reminder not found or you do not have permission to update it.' });
+        }
+        res.status(200).json({ message: 'Reminder updated successfully.' });
+    } catch (error) {
+        console.error('RemindersController: Error updating reminder:', error);
+        res.status(500).json({ message: 'Failed to update reminder.' });
     }
-
-    // Prepare updates, ensuring dueDate is converted to ISO string if present
-    const updatedFields = { ...updates, updatedAt: new Date().toISOString() };
-    if (updatedFields.dueDate) {
-      updatedFields.dueDate = new Date(updatedFields.dueDate).toISOString();
-    }
-
-    await reminderDocRef.update(updatedFields);
-
-    const updatedReminder = { id: reminderDoc.id, ...reminderDoc.data(), ...updatedFields };
-    console.log("Reminders Controller: Reminder updated:", id);
-    res.status(200).json({ message: "Reminder updated successfully.", reminder: updatedReminder });
-  } catch (error) {
-    console.error("Reminders Controller: Error updating reminder:", error.message);
-    res.status(500).json({ message: "Failed to update reminder.", error: error.message });
-  } finally {
-    console.log("--- Reminders Controller: updateReminder End ---\n");
-  }
 };
 
-/**
- * Delete a reminder for the authenticated user.
- */
+// Function to delete a reminder
 exports.deleteReminder = async (req, res) => {
-  console.log("\n--- Reminders Controller: deleteReminder Start ---");
-  console.log("Reminders Controller: User ID:", req.user.userId);
-  console.log("Reminders Controller: Reminder ID:", req.params.id);
-
-  const { id } = req.params;
-
-  if (!req.user || !req.user.userId) {
-    console.error("Reminders Controller: User not authenticated.");
-    return res.status(401).json({ message: "User not authenticated." });
-  }
-
-  try {
-    // Access Firestore instance from app.locals
     const db = req.app.locals.db;
-    if (!db) {
-      console.error("Reminders Controller: Firestore DB instance not found in app.locals.");
-      return res.status(500).json({ message: "Firebase DB not initialized in backend." });
-    }
-    const reminderDocRef = db.collection(`artifacts/${APP_ID}/users/${req.user.userId}/reminders`).doc(id);
-    await reminderDocRef.delete();
+    const userId = req.userId; // Use req.userId
+    const reminderId = req.params.id;
 
-    console.log("Reminders Controller: Reminder deleted:", id);
-    res.status(200).json({ message: "Reminder deleted successfully." });
-  } catch (error) {
-    console.error("Reminders Controller: Error deleting reminder:", error.message);
-    res.status(500).json({ message: "Failed to delete reminder.", error: error.message });
-  } finally {
-    console.log("--- Reminders Controller: deleteReminder End ---\n");
-  }
+    try {
+        const [result] = await db.execute('DELETE FROM reminders WHERE id = ? AND user_id = ?', [reminderId, userId]);
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'Reminder not found or you do not have permission to delete it.' });
+        }
+        res.status(200).json({ message: 'Reminder deleted successfully.' });
+    } catch (error) {
+        console.error('RemindersController: Error deleting reminder:', error);
+        res.status(500).json({ message: 'Failed to delete reminder.' });
+    }
 };
