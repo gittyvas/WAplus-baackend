@@ -46,7 +46,7 @@ exports.getUserProfile = async (req, res) => {
             sessions: [], // Placeholder for sessions
         };
 
-        res.status(200).json(profileData);
+        res.status(200).json({ user: profileData });
 
     } catch (error) {
         console.error('ProfileController: Error fetching user profile from MySQL:', error);
