@@ -109,12 +109,14 @@ app.initialize = async () => {
     const apiRouter = require("./routes/api");
     const contactsRouter = require("./routes/contacts");
     const userRouter = require("./routes/user");
+    const profileRouter = require("./routes/profile"); // ✅ Imported profileRouter
 
     app.use("/", indexRouter);
     app.use("/", authRouter);
     app.use("/api", apiRouter);
     app.use("/api/contacts", contactsRouter);
     app.use("/api/user", userRouter);
+    app.use("/api/profile", profileRouter); // ✅ Mounted profileRouter here
 
     // 404 handler
     app.use((req, res, next) => {
@@ -138,3 +140,4 @@ app.initialize = async () => {
 };
 
 module.exports = app;
+
