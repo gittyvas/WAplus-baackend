@@ -1,9 +1,7 @@
-// backend/middleware/verifyAuthToken.js
-
 const jwt = require('jsonwebtoken');
 
 module.exports = function verifyAuthToken(req, res, next) {
-  const token = req.cookies.token;
+  const token = req.cookies.app_jwt; // ✅ Correct cookie name
 
   if (!token) {
     return res.status(401).json({ message: 'No token provided. Unauthorized.' });
@@ -11,9 +9,7 @@ module.exports = function verifyAuthToken(req, res, next) {
 
   try {
     const decoded = jwt.verify(token, req.jwtSecret);
-    req.user = {
-      uid: decoded.userId, // `userId` is what you stored in the token
-    };
+    req.userId = decoded.userId; // ✅ Attach userId properly
     next();
   } catch (err) {
     console.error('Invalid JWT:', err);
