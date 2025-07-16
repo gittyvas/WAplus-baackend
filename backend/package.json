@@ -22,6 +22,7 @@
     "express-session": "^1.18.1",
     "google-auth-library": "^9.15.1",
     "googleapis": "^150.0.1",
+    "helmet": "^8.1.0",
     "http-errors": "~1.6.3",
     "jsonwebtoken": "^9.0.2",
     "morgan": "~1.9.1",
