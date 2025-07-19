@@ -3,10 +3,10 @@
 const express = require("express");
 const router = express.Router();
 const { OAuth2Client } = require("google-auth-library");
-const jwt = require("jsonwebtoken"); // Ensure jwt is imported
+const jwt = require("jsonwebtoken");
 
-// Polyfill for fetch in Node.js environments older than Node 18
-const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
+// Use require for node-fetch
+const fetch = require("node-fetch");
 
 const generateAppJwtToken = (userId, jwtSecret) => {
   return jwt.sign({ userId }, jwtSecret, { expiresIn: "1h" });
@@ -148,12 +148,14 @@ router.post("/auth/disconnect", async (req, res) => {
 
     // If a Google access token exists, revoke it with Google
     if (token) {
-      await fetch("https://oauth2.googleapis.com/revoke", {
+      console.log("Sending revoke for token:", token);
+      const revokeRes = await fetch("https://oauth2.googleapis.com/revoke", {
         method: "POST",
         headers: { "Content-type": "application/x-www-form-urlencoded" },
         body: `token=${token}`
       });
-      console.log(`Google token revoked for user ${decoded.userId}`);
+      const revokeText = await revokeRes.text();
+      console.log("Google revoke response:", revokeRes.status, revokeText);
     }
 
     // Nullify all Google-related tokens in the database for the user
@@ -202,12 +204,14 @@ router.delete("/auth/delete", async (req, res) => {
 
     // If a Google access token exists, revoke it with Google
     if (token) {
-      await fetch("https://oauth2.googleapis.com/revoke", {
+      console.log("Sending revoke for token:", token);
+      const revokeRes = await fetch("https://oauth2.googleapis.com/revoke", {
         method: "POST",
         headers: { "Content-type": "application/x-www-form-urlencoded" },
         body: `token=${token}`
       });
-      console.log(`Google token revoked during account deletion for user ${decoded.userId}`);
+      const revokeText = await revokeRes.text();
+      console.log("Google revoke response:", revokeRes.status, revokeText);
     }
 
     // Delete the user record from the database
