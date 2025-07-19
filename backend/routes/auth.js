@@ -5,8 +5,7 @@ const router = express.Router();
 const { OAuth2Client } = require("google-auth-library");
 const jwt = require("jsonwebtoken");
 
-// Use require for node-fetch
-const fetch = require("node-fetch");
+// node-fetch is no longer needed as we are using client.revokeToken()
 
 const generateAppJwtToken = (userId, jwtSecret) => {
   return jwt.sign({ userId }, jwtSecret, { expiresIn: "1h" });
@@ -139,23 +138,38 @@ router.post("/auth/disconnect", async (req, res) => {
   const jwtSecret = req.jwtSecret;
 
   try {
-    // Verify the JWT from the cookie to get the userId
     const decoded = jwt.verify(req.cookies.app_jwt, jwtSecret);
 
-    // Retrieve the Google access token from the database for the user
-    const [rows] = await db.execute('SELECT google_access_token FROM users WHERE id = ?', [decoded.userId]);
-    const token = rows[0]?.google_access_token;
+    const [rows] = await db.execute(
+      'SELECT google_access_token, google_refresh_token FROM users WHERE id = ?',
+      [decoded.userId]
+    );
+    const accessToken = rows[0]?.google_access_token;
+    const refreshToken = rows[0]?.google_refresh_token;
 
-    // If a Google access token exists, revoke it with Google
-    if (token) {
-      console.log("Sending revoke for token:", token);
-      const revokeRes = await fetch("https://oauth2.googleapis.com/revoke", {
-        method: "POST",
-        headers: { "Content-type": "application/x-www-form-urlencoded" },
-        body: `token=${token}`
-      });
-      const revokeText = await revokeRes.text();
-      console.log("Google revoke response:", revokeRes.status, revokeText);
+    // Initialize OAuth2Client for token revocation
+    const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+    const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+    const client = new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
+
+    // Revoke access_token
+    if (accessToken) {
+      try {
+        await client.revokeToken(accessToken);
+        console.log(`Google access token revoked for user ${decoded.userId}`);
+      } catch (revokeError) {
+        console.warn(`Failed to revoke Google access token for user ${decoded.userId}:`, revokeError.message);
+      }
+    }
+
+    // Revoke refresh_token
+    if (refreshToken) {
+      try {
+        await client.revokeToken(refreshToken);
+        console.log(`Google refresh token revoked for user ${decoded.userId}`);
+      } catch (revokeError) {
+        console.warn(`Failed to revoke Google refresh token for user ${decoded.userId}:`, revokeError.message);
+      }
     }
 
     // Nullify all Google-related tokens in the database for the user
@@ -195,24 +209,42 @@ router.delete("/auth/delete", async (req, res) => {
   const jwtSecret = req.jwtSecret;
 
   try {
-    // Verify the JWT from the cookie to get the userId
     const decoded = jwt.verify(req.cookies.app_jwt, jwtSecret);
 
-    // Retrieve the Google access token from the database for the user
-    const [rows] = await db.execute('SELECT google_access_token FROM users WHERE id = ?', [decoded.userId]);
-    const token = rows[0]?.google_access_token;
+    const [rows] = await db.execute(
+      'SELECT google_access_token, google_refresh_token FROM users WHERE id = ?',
+      [decoded.userId]
+    );
+    const accessToken = rows[0]?.google_access_token;
+    const refreshToken = rows[0]?.google_refresh_token;
 
-    // If a Google access token exists, revoke it with Google
-    if (token) {
-      console.log("Sending revoke for token:", token);
-      const revokeRes = await fetch("https://oauth2.googleapis.com/revoke", {
-        method: "POST",
-        headers: { "Content-type": "application/x-www-form-urlencoded" },
-        body: `token=${token}`
-      });
-      const revokeText = await revokeRes.text();
-      console.log("Google revoke response:", revokeRes.status, revokeText);
+    // Initialize OAuth2Client for token revocation
+    const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+    const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+    const client = new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
+
+    // Revoke access_token
+    if (accessToken) {
+      try {
+        await client.revokeToken(accessToken);
+        console.log(`Google access token revoked during account deletion for user ${decoded.userId}`);
+      } catch (revokeError) {
+        console.warn(`Failed to revoke Google access token during deletion for user ${decoded.userId}:`, revokeError.message);
+      }
     }
+
+    // Revoke refresh_token
+    if (refreshToken) {
+      try {
+        await client.revokeToken(refreshToken);
+        console.log(`Google refresh token revoked during account deletion for user ${decoded.userId}`);
+      } catch (revokeError) {
+        console.warn(`Failed to revoke Google refresh token during deletion for user ${decoded.userId}:`, revokeError.message);
+      }
+    }
+
+    // Add a 5-second delay to allow Google's background cleanup
+    await new Promise((r) => setTimeout(r, 5000));
 
     // Delete the user record from the database
     await db.execute('DELETE FROM users WHERE id = ?', [decoded.userId]);
