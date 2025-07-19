@@ -3,7 +3,10 @@
 const express = require("express");
 const router = express.Router();
 const { OAuth2Client } = require("google-auth-library");
-const jwt = require("jsonwebtoken");
+const jwt = require("jsonwebtoken"); // Ensure jwt is imported
+
+// Polyfill for fetch in Node.js environments older than Node 18
+const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
 const generateAppJwtToken = (userId, jwtSecret) => {
   return jwt.sign({ userId }, jwtSecret, { expiresIn: "1h" });
@@ -76,14 +79,14 @@ router.get("/auth/google/callback", async (req, res) => {
       userId = rows[0].id;
       await db.execute(
         `UPDATE users SET
-         google_access_token = ?,
-         google_refresh_token = ?,
-         access_token_expires_at = ?,
-         name = ?,
-         email = ?,
-         profile_picture_url = ?,
-         updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
+          google_access_token = ?,
+          google_refresh_token = ?,
+          access_token_expires_at = ?,
+          name = ?,
+          email = ?,
+          profile_picture_url = ?,
+          updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?`,
         [
           tokens.access_token,
           tokens.refresh_token || null,
@@ -97,8 +100,8 @@ router.get("/auth/google/callback", async (req, res) => {
     } else {
       const [result] = await db.execute(
         `INSERT INTO users
-         (google_id, email, name, profile_picture_url, google_access_token, google_refresh_token, access_token_expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          (google_id, email, name, profile_picture_url, google_access_token, google_refresh_token, access_token_expires_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           googleId,
           email,
@@ -129,6 +132,112 @@ router.get("/auth/google/callback", async (req, res) => {
     res.redirect(`${FRONTEND_URL}/login?error=${encodeURIComponent(error.message || "oauth_failed")}`);
   }
 });
+
+// === DISCONNECT GOOGLE ACCOUNT ===
+router.post("/auth/disconnect", async (req, res) => {
+  const db = req.app.locals.db;
+  const jwtSecret = req.jwtSecret;
+
+  try {
+    // Verify the JWT from the cookie to get the userId
+    const decoded = jwt.verify(req.cookies.app_jwt, jwtSecret);
+
+    // Retrieve the Google access token from the database for the user
+    const [rows] = await db.execute('SELECT google_access_token FROM users WHERE id = ?', [decoded.userId]);
+    const token = rows[0]?.google_access_token;
+
+    // If a Google access token exists, revoke it with Google
+    if (token) {
+      await fetch("https://oauth2.googleapis.com/revoke", {
+        method: "POST",
+        headers: { "Content-type": "application/x-www-form-urlencoded" },
+        body: `token=${token}`
+      });
+      console.log(`Google token revoked for user ${decoded.userId}`);
+    }
+
+    // Nullify all Google-related tokens in the database for the user
+    await db.execute(
+      `UPDATE users SET google_access_token = NULL, google_refresh_token = NULL, access_token_expires_at = NULL WHERE id = ?`,
+      [decoded.userId]
+    );
+    console.log(`Google tokens nullified in DB for user ${decoded.userId}`);
+
+    // Clear the application's own JWT cookie
+    res.clearCookie("app_jwt", {
+      httpOnly: true,
+      secure: true,
+      sameSite: "None",
+      domain: ".gitthit.com.ng",
+      path: "/"
+    });
+
+    res.status(200).json({ message: "Disconnected from Google and all tokens revoked" });
+  } catch (error) {
+    console.error("Disconnect error:", error.message);
+    // If JWT verification fails or token is invalid, still attempt to clear cookie and respond
+    res.clearCookie("app_jwt", {
+      httpOnly: true,
+      secure: true,
+      sameSite: "None",
+      domain: ".gitthit.com.ng",
+      path: "/"
+    });
+    res.status(500).json({ error: "Failed to disconnect Google account or invalid session." });
+  }
+});
+
+// === DELETE ACCOUNT ===
+router.delete("/auth/delete", async (req, res) => {
+  const db = req.app.locals.db;
+  const jwtSecret = req.jwtSecret;
+
+  try {
+    // Verify the JWT from the cookie to get the userId
+    const decoded = jwt.verify(req.cookies.app_jwt, jwtSecret);
+
+    // Retrieve the Google access token from the database for the user
+    const [rows] = await db.execute('SELECT google_access_token FROM users WHERE id = ?', [decoded.userId]);
+    const token = rows[0]?.google_access_token;
+
+    // If a Google access token exists, revoke it with Google
+    if (token) {
+      await fetch("https://oauth2.googleapis.com/revoke", {
+        method: "POST",
+        headers: { "Content-type": "application/x-www-form-urlencoded" },
+        body: `token=${token}`
+      });
+      console.log(`Google token revoked during account deletion for user ${decoded.userId}`);
+    }
+
+    // Delete the user record from the database
+    await db.execute('DELETE FROM users WHERE id = ?', [decoded.userId]);
+    console.log(`User ${decoded.userId} deleted from DB.`);
+
+    // Clear the application's own JWT cookie
+    res.clearCookie("app_jwt", {
+      httpOnly: true,
+      secure: true,
+      sameSite: "None",
+      domain: ".gitthit.com.ng",
+      path: "/"
+    });
+
+    res.status(200).json({ message: "Account deleted and access revoked." });
+  } catch (error) {
+    console.error("Account deletion error:", error.message);
+    // Even if deletion fails, attempt to clear the cookie for security
+    res.clearCookie("app_jwt", {
+      httpOnly: true,
+      secure: true,
+      sameSite: "None",
+      domain: ".gitthit.com.ng",
+      path: "/"
+    });
+    res.status(500).json({ error: "Account deletion failed." });
+  }
+});
+
 
 // === LOGOUT ===
 router.post("/auth/logout", (req, res) => {
