@@ -121,7 +121,7 @@ router.get("/auth/google/callback", async (req, res) => {
       secure: true,
       maxAge: 3600000, // 1 hour
       sameSite: "None",
-      domain: ".gitthit.com.ng",
+      domain: ".pluse.name.ng",
       path: "/"
     });
 
@@ -184,7 +184,7 @@ router.post("/auth/disconnect", async (req, res) => {
       httpOnly: true,
       secure: true,
       sameSite: "None",
-      domain: ".gitthit.com.ng",
+      domain: ".pluse.name.ng",
       path: "/"
     });
 
@@ -196,7 +196,7 @@ router.post("/auth/disconnect", async (req, res) => {
       httpOnly: true,
       secure: true,
       sameSite: "None",
-      domain: ".gitthit.com.ng",
+      domain: ".pluse.name.ng",
       path: "/"
     });
     res.status(500).json({ error: "Failed to disconnect Google account or invalid session." });
@@ -255,7 +255,7 @@ router.delete("/auth/delete", async (req, res) => {
       httpOnly: true,
       secure: true,
       sameSite: "None",
-      domain: ".gitthit.com.ng",
+      domain: ".pluse.name.ng",
       path: "/"
     });
 
@@ -267,7 +267,7 @@ router.delete("/auth/delete", async (req, res) => {
       httpOnly: true,
       secure: true,
       sameSite: "None",
-      domain: ".gitthit.com.ng",
+      domain: ".pluse.name.ng",
       path: "/"
     });
     res.status(500).json({ error: "Account deletion failed." });
@@ -281,7 +281,7 @@ router.post("/auth/logout", (req, res) => {
     httpOnly: true,
     secure: true,
     sameSite: "None",
-    domain: ".gitthit.com.ng",
+    domain: ".pluse.name.ng",
     path: "/"
   });
   res.status(200).json({ message: "Logged out successfully" });
