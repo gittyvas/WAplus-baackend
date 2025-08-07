@@ -125,7 +125,9 @@ router.get("/auth/google/callback", async (req, res) => {
       path: "/"
     });
 
-    res.redirect(`${FRONTEND_URL}/dashboard`);
+    // For testing purposes, redirect back to the login page after successful login.
+    // This should be changed back to the dashboard or profile page for a real application.
+    res.redirect(`${FRONTEND_URL}/login`);
   } catch (error) {
     console.error("OAuth callback error:", error.message);
     res.redirect(`${FRONTEND_URL}/login?error=${encodeURIComponent(error.message || "oauth_failed")}`);
@@ -288,3 +290,4 @@ router.post("/auth/logout", (req, res) => {
 });
 
 module.exports = router;
+
