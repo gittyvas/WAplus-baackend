@@ -1,11 +1,8 @@
-// backend/routes/auth.js
-
 const express = require("express");
 const router = express.Router();
 const { OAuth2Client } = require("google-auth-library");
 const jwt = require("jsonwebtoken");
-
-// node-fetch is no longer needed as we are using client.revokeToken()
+const fetch = require('node-fetch'); // For making HTTP requests
 
 const generateAppJwtToken = (userId, jwtSecret) => {
   return jwt.sign({ userId }, jwtSecret, { expiresIn: "1h" });
@@ -125,8 +122,19 @@ router.get("/auth/google/callback", async (req, res) => {
       path: "/"
     });
 
-    // For testing purposes, redirect back to the login page after successful login.
-    // This should be changed back to the dashboard or profile page for a real application.
+    // Send WhatsApp template after successful login
+    try {
+      await fetch("https://wa-api-tdei.onrender.com/login-notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, phone: "447398786815" }) // replace with actual phone if dynamic
+      });
+      console.log("WhatsApp template triggered for user:", name);
+    } catch (err) {
+      console.error("Failed to send WhatsApp template:", err.message);
+    }
+
+    // Redirect to the dashboard
     res.redirect(`${FRONTEND_URL}/dashboard`);
   } catch (error) {
     console.error("OAuth callback error:", error.message);
@@ -290,4 +298,3 @@ router.post("/auth/logout", (req, res) => {
 });
 
 module.exports = router;
-
