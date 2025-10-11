@@ -2,39 +2,9 @@ const express = require("express");
 const router = express.Router();
 const { OAuth2Client } = require("google-auth-library");
 const jwt = require("jsonwebtoken");
-const fetch = require('node-fetch'); // For making HTTP requests
+const fetch = require('node-fetch'); // Make sure this is at the top
 
-const generateAppJwtToken = (userId, jwtSecret) => {
-  return jwt.sign({ userId }, jwtSecret, { expiresIn: "1h" });
-};
-
-// === START OAUTH ===
-router.get("/auth/google", (req, res) => {
-  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-  const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
-
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_REDIRECT_URI) {
-    console.error("CRITICAL ERROR: Google OAuth config missing.");
-    return res.status(500).json({ message: "Server OAuth configuration error." });
-  }
-
-  const client = new OAuth2Client(GOOGLE_CLIENT_ID, "", GOOGLE_REDIRECT_URI);
-
-  const authUrl = client.generateAuthUrl({
-    access_type: "offline",
-    prompt: "consent",
-    include_granted_scopes: false,
-    scope: [
-      "openid",
-      "https://www.googleapis.com/auth/userinfo.profile",
-      "https://www.googleapis.com/auth/userinfo.email",
-      "https://www.googleapis.com/auth/contacts.readonly",
-      "https://www.googleapis.com/auth/contacts.other.readonly"
-    ]
-  });
-
-  res.redirect(authUrl);
-});
+// ... (other routes and functions like generateAppJwtToken remain the same) ...
 
 // === OAUTH CALLBACK ===
 router.get("/auth/google/callback", async (req, res) => {
@@ -73,40 +43,21 @@ router.get("/auth/google/callback", async (req, res) => {
 
     if (rows.length > 0) {
       userId = rows[0].id;
+      // ... (database update logic remains the same)
       await db.execute(
         `UPDATE users SET
-          google_access_token = ?,
-          google_refresh_token = ?,
-          access_token_expires_at = ?,
-          name = ?,
-          email = ?,
-          profile_picture_url = ?,
-          updated_at = CURRENT_TIMESTAMP
+          google_access_token = ?, google_refresh_token = ?, access_token_expires_at = ?,
+          name = ?, email = ?, profile_picture_url = ?, updated_at = CURRENT_TIMESTAMP
           WHERE id = ?`,
-        [
-          tokens.access_token,
-          tokens.refresh_token || null,
-          accessTokenExpiresAt,
-          name,
-          email,
-          profilePictureUrl,
-          userId
-        ]
+        [tokens.access_token, tokens.refresh_token || null, accessTokenExpiresAt, name, email, profilePictureUrl, userId]
       );
     } else {
+      // ... (database insert logic remains the same)
       const [result] = await db.execute(
         `INSERT INTO users
           (google_id, email, name, profile_picture_url, google_access_token, google_refresh_token, access_token_expires_at)
           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          googleId,
-          email,
-          name,
-          profilePictureUrl,
-          tokens.access_token,
-          tokens.refresh_token || null,
-          accessTokenExpiresAt
-        ]
+        [googleId, email, name, profilePictureUrl, tokens.access_token, tokens.refresh_token || null, accessTokenExpiresAt]
       );
       userId = result.insertId;
     }
@@ -116,25 +67,40 @@ router.get("/auth/google/callback", async (req, res) => {
     res.cookie("app_jwt", appJwt, {
       httpOnly: true,
       secure: true,
-      maxAge: 3600000, // 1 hour
+      maxAge: 3600000,
       sameSite: "None",
       domain: ".pluse.name.ng",
       path: "/"
     });
 
-    // Send WhatsApp template after successful login
+    // --- START: MODIFIED WHATSAPP NOTIFICATION LOGIC ---
     try {
-      await fetch("https://wa-api-tdei.onrender.com/login-notify", {
+      const waApiUrl = "https://wa-api-tdei.onrender.com/login-notify";
+      const requestBody = { name, phone: "447398786815" };
+
+      console.log(`Attempting to send WhatsApp notification to ${waApiUrl} with body:`, JSON.stringify(requestBody));
+
+      const response = await fetch(waApiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, phone: "447398786815" }) // replace with actual phone if dynamic
+        body: JSON.stringify(requestBody)
       });
-      console.log("WhatsApp template triggered for user:", name);
-    } catch (err) {
-      console.error("Failed to send WhatsApp template:", err.message);
-    }
 
-    // Redirect to the dashboard
+      // Check if the request was successful (status code 2xx)
+      if (response.ok) {
+        console.log(`WhatsApp template triggered successfully for user: ${name}. Status: ${response.status}`);
+      } else {
+        // If the server responded with an error, log the details
+        const errorBody = await response.text();
+        console.error(`Failed to send WhatsApp template. Server responded with status: ${response.status}`);
+        console.error("Response body:", errorBody);
+      }
+    } catch (err) {
+      // This will catch network errors (e.g., DNS, server unreachable)
+      console.error("A network or fetch API error occurred while sending WhatsApp template:", err);
+    }
+    // --- END: MODIFIED WHATSAPP NOTIFICATION LOGIC ---
+
     res.redirect(`${FRONTEND_URL}/dashboard`);
   } catch (error) {
     console.error("OAuth callback error:", error.message);
@@ -142,159 +108,8 @@ router.get("/auth/google/callback", async (req, res) => {
   }
 });
 
-// === DISCONNECT GOOGLE ACCOUNT ===
-router.post("/auth/disconnect", async (req, res) => {
-  const db = req.app.locals.db;
-  const jwtSecret = req.jwtSecret;
 
-  try {
-    const decoded = jwt.verify(req.cookies.app_jwt, jwtSecret);
-
-    const [rows] = await db.execute(
-      'SELECT google_access_token, google_refresh_token FROM users WHERE id = ?',
-      [decoded.userId]
-    );
-    const accessToken = rows[0]?.google_access_token;
-    const refreshToken = rows[0]?.google_refresh_token;
-
-    // Initialize OAuth2Client for token revocation
-    const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-    const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-    const client = new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
-
-    // Revoke access_token
-    if (accessToken) {
-      try {
-        await client.revokeToken(accessToken);
-        console.log(`Google access token revoked for user ${decoded.userId}`);
-      } catch (revokeError) {
-        console.warn(`Failed to revoke Google access token for user ${decoded.userId}:`, revokeError.message);
-      }
-    }
-
-    // Revoke refresh_token
-    if (refreshToken) {
-      try {
-        await client.revokeToken(refreshToken);
-        console.log(`Google refresh token revoked for user ${decoded.userId}`);
-      } catch (revokeError) {
-        console.warn(`Failed to revoke Google refresh token for user ${decoded.userId}:`, revokeError.message);
-      }
-    }
-
-    // Nullify all Google-related tokens in the database for the user
-    await db.execute(
-      `UPDATE users SET google_access_token = NULL, google_refresh_token = NULL, access_token_expires_at = NULL WHERE id = ?`,
-      [decoded.userId]
-    );
-    console.log(`Google tokens nullified in DB for user ${decoded.userId}`);
-
-    // Clear the application's own JWT cookie
-    res.clearCookie("app_jwt", {
-      httpOnly: true,
-      secure: true,
-      sameSite: "None",
-      domain: ".pluse.name.ng",
-      path: "/"
-    });
-
-    res.status(200).json({ message: "Disconnected from Google and all tokens revoked" });
-  } catch (error) {
-    console.error("Disconnect error:", error.message);
-    // If JWT verification fails or token is invalid, still attempt to clear cookie and respond
-    res.clearCookie("app_jwt", {
-      httpOnly: true,
-      secure: true,
-      sameSite: "None",
-      domain: ".pluse.name.ng",
-      path: "/"
-    });
-    res.status(500).json({ error: "Failed to disconnect Google account or invalid session." });
-  }
-});
-
-// === DELETE ACCOUNT ===
-router.delete("/auth/delete", async (req, res) => {
-  const db = req.app.locals.db;
-  const jwtSecret = req.jwtSecret;
-
-  try {
-    const decoded = jwt.verify(req.cookies.app_jwt, jwtSecret);
-
-    const [rows] = await db.execute(
-      'SELECT google_access_token, google_refresh_token FROM users WHERE id = ?',
-      [decoded.userId]
-    );
-    const accessToken = rows[0]?.google_access_token;
-    const refreshToken = rows[0]?.google_refresh_token;
-
-    // Initialize OAuth2Client for token revocation
-    const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-    const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-    const client = new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
-
-    // Revoke access_token
-    if (accessToken) {
-      try {
-        await client.revokeToken(accessToken);
-        console.log(`Google access token revoked during account deletion for user ${decoded.userId}`);
-      } catch (revokeError) {
-        console.warn(`Failed to revoke Google access token during deletion for user ${decoded.userId}:`, revokeError.message);
-      }
-    }
-
-    // Revoke refresh_token
-    if (refreshToken) {
-      try {
-        await client.revokeToken(refreshToken);
-        console.log(`Google refresh token revoked during account deletion for user ${decoded.userId}`);
-      } catch (revokeError) {
-        console.warn(`Failed to revoke Google refresh token during deletion for user ${decoded.userId}:`, revokeError.message);
-      }
-    }
-
-    // Add a 5-second delay to allow Google's background cleanup
-    await new Promise((r) => setTimeout(r, 5000));
-
-    // Delete the user record from the database
-    await db.execute('DELETE FROM users WHERE id = ?', [decoded.userId]);
-    console.log(`User ${decoded.userId} deleted from DB.`);
-
-    // Clear the application's own JWT cookie
-    res.clearCookie("app_jwt", {
-      httpOnly: true,
-      secure: true,
-      sameSite: "None",
-      domain: ".pluse.name.ng",
-      path: "/"
-    });
-
-    res.status(200).json({ message: "Account deleted and access revoked." });
-  } catch (error) {
-    console.error("Account deletion error:", error.message);
-    // Even if deletion fails, attempt to clear the cookie for security
-    res.clearCookie("app_jwt", {
-      httpOnly: true,
-      secure: true,
-      sameSite: "None",
-      domain: ".pluse.name.ng",
-      path: "/"
-    });
-    res.status(500).json({ error: "Account deletion failed." });
-  }
-});
-
-
-// === LOGOUT ===
-router.post("/auth/logout", (req, res) => {
-  res.clearCookie("app_jwt", {
-    httpOnly: true,
-    secure: true,
-    sameSite: "None",
-    domain: ".pluse.name.ng",
-    path: "/"
-  });
-  res.status(200).json({ message: "Logged out successfully" });
-});
+// ... (the rest of your auth.js file remains the same) ...
 
 module.exports = router;
+
