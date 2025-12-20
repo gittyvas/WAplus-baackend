@@ -15,12 +15,14 @@ async function createPool() {
   try {
     const pool = mysql.createPool({
       host: process.env.DB_HOST,
+      port: process.env.DB_PORT || 3306, // <-- add port
       user: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
       database: process.env.DB_DATABASE,
       waitForConnections: true, // If true, the pool will queue connections if none are available
       connectionLimit: 10,       // Maximum number of connections to create at once
-      queueLimit: 0              // No limit for the connection queue (connections will queue indefinitely)
+      queueLimit: 0,   // No limit for the connection queue (connections will queue indefinitely)
+      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: true } : false, // <-- add SSL
     });
 
     // Test the connection by getting and releasing a connection
