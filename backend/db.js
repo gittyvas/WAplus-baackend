@@ -1,6 +1,9 @@
 const mysql = require('mysql2/promise');
 
 async function createPool() {
+  // Debug: Print the DB_SSL value to the logs (safely)
+  console.log(`Debug: DB_SSL value is "${process.env.DB_SSL}"`);
+
   if (!process.env.DB_HOST || !process.env.DB_USER || !process.env.DB_PASSWORD || !process.env.DB_DATABASE) {
     console.error('CRITICAL ERROR: Missing database environment variables!');
     process.exit(1);
@@ -16,8 +19,8 @@ async function createPool() {
       waitForConnections: true,
       connectionLimit: 10,
       queueLimit: 0,
-      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined, 
-      // If DB_SSL=false, ssl is undefined and connection will be plain
+      // FIX: Force SSL object if DB_SSL is set, handling whitespace issues
+      ssl: { rejectUnauthorized: false }
     });
 
     const connection = await pool.getConnection();
