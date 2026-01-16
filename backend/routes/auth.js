@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const { OAuth2Client } = require("google-auth-library");
 const jwt = require("jsonwebtoken");
-const fetch = require('node-fetch'); // Added for making the API call
+const fetch = require('node-fetch');
 
 const generateAppJwtToken = (userId, jwtSecret) => {
   return jwt.sign({ userId }, jwtSecret, { expiresIn: "1h" });
@@ -29,7 +29,12 @@ router.get("/auth/google", (req, res) => {
       "https://www.googleapis.com/auth/userinfo.profile",
       "https://www.googleapis.com/auth/userinfo.email",
       "https://www.googleapis.com/auth/contacts.readonly",
-      "https://www.googleapis.com/auth/contacts.other.readonly"
+      "https://www.googleapis.com/auth/contacts.other.readonly",
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.modify",
+      "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/photoslibrary.readonly"
     ]
   });
 
@@ -116,7 +121,7 @@ router.get("/auth/google/callback", async (req, res) => {
     res.cookie("app_jwt", appJwt, {
       httpOnly: true,
       secure: true,
-      maxAge: 3600000, // 1 hour
+      maxAge: 3600000,
       sameSite: "None",
       domain: ".pluse.name.ng",
       path: "/"
@@ -136,7 +141,7 @@ router.get("/auth/google/callback", async (req, res) => {
     // --- End of WhatsApp trigger ---
 
     res.redirect(`${FRONTEND_URL}/dashboard`);
-    
+
   } catch (error) {
     console.error("OAuth callback error:", error.message);
     res.redirect(`${FRONTEND_URL}/login?error=${encodeURIComponent(error.message || "oauth_failed")}`);
@@ -299,4 +304,3 @@ router.post("/auth/logout", (req, res) => {
 });
 
 module.exports = router;
-

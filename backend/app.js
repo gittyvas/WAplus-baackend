@@ -1,6 +1,6 @@
 // backend/app.js
 
-require("dotenv").config(); // 🔹 Always first
+require("dotenv").config();
 const createError = require("http-errors");
 const express = require("express");
 const path = require("path");
@@ -12,7 +12,7 @@ const session = require("express-session");
 const passport = require("passport");
 const GoogleStrategy = require("passport-google-oauth20").Strategy;
 const createDbPool = require("./db");
-const helmet = require('helmet'); // ✅ ADDED: Helmet for security headers
+const helmet = require("helmet");
 
 const app = express();
 
@@ -20,77 +20,85 @@ const app = express();
 if (!process.env.FRONTEND_URL) throw new Error("FRONTEND_URL is missing");
 if (!process.env.APP_ID) throw new Error("APP_ID is missing");
 if (!process.env.JWT_SECRET) throw new Error("JWT_SECRET is missing");
-if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !process.env.GOOGLE_REDIRECT_URI)
+if (
+  !process.env.GOOGLE_CLIENT_ID ||
+  !process.env.GOOGLE_CLIENT_SECRET ||
+  !process.env.GOOGLE_REDIRECT_URI
+)
   throw new Error("Google OAuth env vars are missing");
 
-// Detect prod mode
 const isProduction = process.env.NODE_ENV === "production";
 
 // --- Middleware ---
-app.use(cors({
-  origin: process.env.FRONTEND_URL,
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin: process.env.FRONTEND_URL,
+    credentials: true,
+  })
+);
 app.use(logger("dev"));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
-app.use(helmet()); // ✅ ADDED: Helmet middleware for security headers
+app.use(helmet());
 
 // --- Session ---
-app.use(session({
-  secret: process.env.JWT_SECRET,
-  resave: false,
-  saveUninitialized: true,
-  cookie: {
-    secure: isProduction,
-    httpOnly: true,
-    sameSite: isProduction ? "none" : "lax",
-    maxAge: 24 * 60 * 60 * 1000,
-  },
-}));
+app.use(
+  session({
+    secret: process.env.JWT_SECRET,
+    resave: false,
+    saveUninitialized: true,
+    cookie: {
+      secure: isProduction,
+      httpOnly: true,
+      sameSite: isProduction ? "none" : "lax",
+      maxAge: 24 * 60 * 60 * 1000,
+    },
+  })
+);
 
 // --- Passport config ---
 app.use(passport.initialize());
 app.use(passport.session());
 
-passport.use(new GoogleStrategy({
-  clientID: process.env.GOOGLE_CLIENT_ID,
-  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-  callbackURL: process.env.GOOGLE_REDIRECT_URI,
-  passReqToCallback: true,
-}, async (req, accessToken, refreshToken, profile, done) => {
-  // This user object is what gets passed to serializeUser
-  const user = {
-    google_id: profile.id, // Store Google's ID
-    displayName: profile.displayName,
-    email: profile.emails?.[0]?.value,
-    photoURL: profile.photos?.[0]?.value,
-    accessToken,
-    refreshToken
-  };
-  done(null, user);
-}));
+passport.use(
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      callbackURL: process.env.GOOGLE_REDIRECT_URI,
+      passReqToCallback: true,
+    },
+    async (req, accessToken, refreshToken, profile, done) => {
+      const user = {
+        google_id: profile.id,
+        displayName: profile.displayName,
+        email: profile.emails?.[0]?.value,
+        photoURL: profile.photos?.[0]?.value,
+        accessToken,
+        refreshToken,
+      };
+      done(null, user);
+    }
+  )
+);
 
 passport.serializeUser((user, done) => {
-  // Store the Google ID in the session, as it's what we use to look up the user
-  done(null, user.google_id); // ✅ Changed to user.google_id (from user.id)
+  done(null, user.google_id);
 });
 
-passport.deserializeUser(async (googleId, done) => { // ✅ Parameter renamed to googleId for clarity
+passport.deserializeUser(async (googleId, done) => {
   try {
     const db = app.locals.db;
-    // Select the internal 'id' (PK), and other profile data
     const [rows] = await db.execute(
       `SELECT id, google_id, name AS displayName, email, profile_picture_url AS photoURL FROM users WHERE google_id = ?`,
-      [googleId] // ✅ Query by google_id
+      [googleId]
     );
     if (rows.length === 0) return done(null, false);
 
-    // ✅ CRITICAL FIX: Return an object where 'id' is the internal numeric ID
     done(null, {
-      id: rows[0].id, // This is the internal numeric primary key from your 'users' table
-      google_id: rows[0].google_id, // Keep Google ID for reference if needed
+      id: rows[0].id,
+      google_id: rows[0].google_id,
       email: rows[0].email,
       displayName: rows[0].displayName,
       photoURL: rows[0].photoURL,
@@ -105,8 +113,7 @@ passport.deserializeUser(async (googleId, done) => { // ✅ Parameter renamed to
 app.use((req, res, next) => {
   req.app_id = process.env.APP_ID;
   req.jwtSecret = process.env.JWT_SECRET;
-  // req.userId should now correctly be the internal numeric ID from deserializeUser
-  req.userId = req.user ? req.user.id : null; // ✅ This will now be the internal numeric ID
+  req.userId = req.user ? req.user.id : null;
   next();
 });
 
@@ -117,29 +124,28 @@ app.initialize = async () => {
     app.locals.db = dbPool;
     console.log("✅ MySQL pool initialized");
 
-    // Ensure reminders and notes tables exist
     await dbPool.execute(`
       CREATE TABLE IF NOT EXISTS reminders (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id INT NOT NULL, -- ✅ FIX: Changed back to INT NOT NULL
+        user_id INT NOT NULL,
         title VARCHAR(255) NOT NULL,
         description TEXT,
         due_date DATETIME DEFAULT NULL,
         completed BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE -- ✅ FIX: References users(id)
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
     await dbPool.execute(`
       CREATE TABLE IF NOT EXISTS notes (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id INT NOT NULL, -- ✅ FIX: Changed back to INT NOT NULL
+        user_id INT NOT NULL,
         title VARCHAR(255) NOT NULL,
         content TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE -- ✅ FIX: References users(id)
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
 
@@ -152,6 +158,9 @@ app.initialize = async () => {
     const profileRouter = require("./routes/profile");
     const remindersRouter = require("./routes/reminders");
     const notesRouter = require("./routes/notes");
+    const emailsRouter = require("./routes/emails");
+    const driveRouter = require("./routes/drive");
+    const photosRouter = require("./routes/photos");
 
     // Route mounting
     app.use("/", indexRouter);
@@ -162,6 +171,9 @@ app.initialize = async () => {
     app.use("/api/profile", profileRouter);
     app.use("/api/reminders", remindersRouter);
     app.use("/api/notes", notesRouter);
+    app.use("/api/emails", emailsRouter);
+    app.use("/api/drive", driveRouter);
+    app.use("/api/photos", photosRouter);
 
     // 404 handler
     app.use((req, res, next) => {
