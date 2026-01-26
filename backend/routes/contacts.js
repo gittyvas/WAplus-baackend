@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { google } = require("googleapis");
-const pool = require("../config/database");
+const pool = require("../db");
 const authMiddleware = require("../middleware/auth");
 
 router.get("/google", authMiddleware, async (req, res) => {
